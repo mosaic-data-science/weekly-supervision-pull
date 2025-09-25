@@ -21,7 +21,7 @@ WITH base AS (
         ON b.ServiceCodeId = sc.ServiceCodeId
     INNER JOIN [insights].[insights].[Client] AS c
         ON b.ClientContactId = c.ClientId
-    WHERE b.ServiceEndTime >= '{start_date}' AND b.ServiceEndTime < DATEADD(month, 1, '{start_date}')
+    WHERE b.ServiceEndTime >= '{start_date}' AND b.ServiceEndTime < '{end_date}'
       AND sc.ServiceCode IN ('97155','97153','Non-billable: PM Admin','PDS | BCBA')
 ),
 direct AS (

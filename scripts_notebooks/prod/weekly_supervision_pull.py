@@ -14,6 +14,7 @@ import pyodbc
 import os
 import shutil
 import logging
+import re
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import io
@@ -68,6 +69,48 @@ class WeeklySupervisionPull:
         self.archive_folder = f'{self.transformed_folder}/archived'
         
         self.logger.info("WeeklySupervisionPull initialized successfully")
+    
+    def _get_latest_date_from_files(self) -> Optional[str]:
+        """
+        Get the latest date from existing files in the raw_pulls folder.
+        
+        Returns:
+            str: Latest date found in YYYY-MM-DD format, or None if no files found
+        """
+        try:
+            if not os.path.exists(self.raw_folder):
+                self.logger.info("Raw pulls folder does not exist, using default date")
+                return None
+            
+            # Get all CSV files in the raw_pulls folder
+            csv_files = [f for f in os.listdir(self.raw_folder) if f.endswith('.csv')]
+            
+            if not csv_files:
+                self.logger.info("No CSV files found in raw_pulls folder, using default date")
+                return None
+            
+            # Extract dates from filenames using regex pattern
+            # Pattern matches: weekly_supervision_hours_YYYY-MM-DD.csv or august_2005_weekly_supervision_hours_YYYY-MM-DD.csv
+            date_pattern = r'(\d{4}-\d{2}-\d{2})'
+            dates = []
+            
+            for filename in csv_files:
+                match = re.search(date_pattern, filename)
+                if match:
+                    dates.append(match.group(1))
+            
+            if not dates:
+                self.logger.info("No dates found in filenames, using default date")
+                return None
+            
+            # Find the latest date
+            latest_date = max(dates)
+            self.logger.info(f"Found latest date from existing files: {latest_date}")
+            return latest_date
+            
+        except Exception as e:
+            self.logger.error(f"Error getting latest date from files: {e}")
+            return None
     
     def _setup_logging(self) -> None:
         """Set up logging configuration."""
@@ -201,10 +244,13 @@ class WeeklySupervisionPull:
         # Create connection string
         conn_str = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={self.server};DATABASE=insights;UID={self.username};PWD={self.password}'
         
-        # Format the SQL query with the start date
-        sql_query = self.sql_template.format(start_date=start_date)
+        # Calculate end date (tomorrow to include all of today)
+        end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
         
-        self.logger.info(f"Executing SQL query with start_date: {start_date}")
+        # Format the SQL query with the start and end dates
+        sql_query = self.sql_template.format(start_date=start_date, end_date=end_date)
+        
+        self.logger.info(f"Executing SQL query with start_date: {start_date}, end_date: {end_date}")
         
         try:
             conn = pyodbc.connect(conn_str)
@@ -358,12 +404,20 @@ class WeeklySupervisionPull:
         
         Args:
             start_date (str, optional): Start date for data extraction. 
-                                      Defaults to 7 days ago.
+                                      If None, will use latest date from existing files or 7 days ago.
         """
         try:
-            # Set default start date if not provided
+            # Determine start date
             if start_date is None:
-                start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+                # Try to get the latest date from existing files
+                latest_file_date = self._get_latest_date_from_files()
+                if latest_file_date:
+                    start_date = latest_file_date
+                    self.logger.info(f"Using latest date from existing files: {start_date}")
+                else:
+                    # Fallback to 7 days ago if no files found
+                    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+                    self.logger.info(f"No existing files found, using default date: {start_date}")
             
             self.logger.info("="*50)
             self.logger.info("Starting Weekly Supervision Hours Pull")
