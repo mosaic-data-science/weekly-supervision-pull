@@ -68,6 +68,11 @@ class WeeklySupervisionPull:
         self.transformed_folder = '../../data/transformed_supervision_weekly'
         self.archive_folder = f'{self.transformed_folder}/archived'
         
+        # Credentials paths
+        self.credentials_dir = '../../credentials'
+        self.client_secret_path = os.path.join(self.credentials_dir, 'client_secret.json')
+        self.token_path = os.path.join(self.credentials_dir, 'token.json')
+        
         self.logger.info("WeeklySupervisionPull initialized successfully")
     
     def _get_latest_date_from_files(self) -> Optional[str]:
@@ -140,19 +145,24 @@ class WeeklySupervisionPull:
             Google Drive service object
         """
         creds = None
-        if os.path.exists("token.json"):
-            creds = oauth2_creds.Credentials.from_authorized_user_file("token.json")
+        if os.path.exists(self.token_path):
+            creds = oauth2_creds.Credentials.from_authorized_user_file(self.token_path)
         
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
             else:
+                if not os.path.exists(self.client_secret_path):
+                    raise FileNotFoundError(f"Client secret file not found at {self.client_secret_path}")
+                
                 flow = InstalledAppFlow.from_client_secrets_file(
-                    "client_secret.json", 
+                    self.client_secret_path, 
                     ["https://www.googleapis.com/auth/drive"]
                 )
                 creds = flow.run_local_server(port=0)
-            with open("token.json", "w") as f:
+            
+            # Save token to credentials directory
+            with open(self.token_path, "w") as f:
                 f.write(creds.to_json())
         
         return build("drive", "v3", credentials=creds)
