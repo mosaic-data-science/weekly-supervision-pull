@@ -174,6 +174,7 @@ service-account-key.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+desktop.ini
 
 # Temporary files
 tmp/
