@@ -20,12 +20,14 @@ weekly-supervision-pull/
 ├── README.md                           # This file
 ├── requirements.txt                     # Python dependencies
 ├── .gitignore                          # Git ignore rules
+├── credentials/                        # Authentication files (ignored by git)
+│   ├── client_secret.json              # Google OAuth credentials
+│   ├── service-account-key.json        # Service account key
+│   ├── token.json                      # OAuth token
+│   └── README.md                       # Credentials documentation
 ├── scripts_notebooks/
 │   ├── dev/                            # Development notebooks
-│   │   ├── weekly_pull_dev.ipynb       # Development Jupyter notebook
-│   │   ├── client_secret.json          # Google OAuth credentials
-│   │   ├── service-account-key.json    # Service account key
-│   │   └── token.json                  # OAuth token
+│   │   └── weekly_pull_dev.ipynb       # Development Jupyter notebook
 │   └── prod/                           # Production scripts
 │       ├── weekly_supervision_pull.py  # Main production script
 │       ├── config.py                   # Configuration management
@@ -68,8 +70,8 @@ weekly-supervision-pull/
    ```
 
 4. **Configure Google Drive**:
-   - Place `client_secret.json` in `scripts_notebooks/prod/`
-   - Run the script once to generate `token.json`
+   - Place `client_secret.json` in `credentials/` directory
+   - Run the script once to generate `token.json` in the credentials directory
 
 ### Usage
 
