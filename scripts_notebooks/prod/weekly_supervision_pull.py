@@ -251,9 +251,6 @@ class WeeklySupervisionPull:
         Returns:
             pd.DataFrame: Query results
         """
-        # Create connection string
-        conn_str = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={self.server};DATABASE=insights;UID={self.username};PWD={self.password}'
-        
         # Calculate end date (tomorrow to include all of today)
         end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
         
@@ -262,15 +259,37 @@ class WeeklySupervisionPull:
         
         self.logger.info(f"Executing SQL query with start_date: {start_date}, end_date: {end_date}")
         
-        try:
-            conn = pyodbc.connect(conn_str)
-            df = pd.read_sql(sql_query, conn)
-            conn.close()
-            self.logger.info(f"Query executed successfully. Retrieved {len(df)} rows.")
-            return df
-        except Exception as e:
-            self.logger.error(f"Error executing SQL query: {e}")
-            raise
+        # Try ODBC Driver 17 first (for collaborator compatibility), then fall back to other options
+        drivers_to_try = [
+            ('ODBC Driver 17 for SQL Server', ''),
+            ('ODBC Driver 18 for SQL Server', 'TrustServerCertificate=yes'),
+            ('SQL Server', ''),
+            ('ODBC Driver 18 for SQL Server', 'TrustServerCertificate=yes;Encrypt=no')
+        ]
+        
+        for driver, extra_params in drivers_to_try:
+            try:
+                # Build connection string with optional extra parameters
+                conn_str = f'DRIVER={{{driver}}};SERVER={self.server};DATABASE=insights;UID={self.username};PWD={self.password}'
+                if extra_params:
+                    conn_str += f';{extra_params}'
+                
+                self.logger.info(f"Attempting connection with {driver}")
+                conn = pyodbc.connect(conn_str)
+                df = pd.read_sql(sql_query, conn)
+                conn.close()
+                self.logger.info(f"Query executed successfully with {driver}. Retrieved {len(df)} rows.")
+                return df
+            except Exception as e:
+                self.logger.warning(f"Failed to connect with {driver}: {e}")
+                # Check if this is the last driver in the list
+                current_index = drivers_to_try.index((driver, extra_params))
+                if current_index == len(drivers_to_try) - 1:  # If this is the last driver to try
+                    self.logger.error(f"All ODBC drivers failed. Last error: {e}")
+                    raise
+                else:
+                    self.logger.info(f"Trying next driver...")
+                    continue
     
     def transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """

@@ -134,6 +134,9 @@ named_direct_only AS (
         do.DirectServiceLocationName,
         do.DirectHours_NoSupervision AS DirectHours,
         0.0 AS SupervisionHours,
+        NULL AS SupervisorFirstName,
+        NULL AS SupervisorLastName,
+        NULL AS SupervisorServiceLocationName,
         'Direct (no supervision overlap)' AS RowType
     FROM direct_only do
     LEFT JOIN [insights].[dw2].[Contacts] pdir
