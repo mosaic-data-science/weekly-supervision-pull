@@ -21,7 +21,8 @@ WITH base AS (
         ON b.ServiceCodeId = sc.ServiceCodeId
     INNER JOIN [insights].[insights].[Client] AS c
         ON b.ClientContactId = c.ClientId
-    WHERE b.ServiceEndTime >= '{start_date}' AND b.ServiceEndTime < '{end_date}'
+    WHERE b.ServiceEndTime >= '{start_date}'
+      AND b.ServiceEndTime <  '{end_date}'  -- includes all of end_date
       AND sc.ServiceCode IN ('97155','97153','Non-billable: PM Admin','PDS | BCBA')
 ),
 direct AS (
@@ -91,9 +92,7 @@ direct_totals AS (
         d.ServiceLocationName AS DirectServiceLocationName,
         SUM(DATEDIFF(MINUTE, d.ServiceStartTime, d.ServiceEndTime)) / 60.0 AS DirectHours_Total
     FROM direct d
-    GROUP BY
-        d.ClientContactId, d.ClientFullName,
-        d.ProviderContactId, d.ServiceLocationName
+    GROUP BY d.ClientContactId, d.ClientFullName, d.ProviderContactId, d.ServiceLocationName
 ),
 
 -- Total overlap hours per client, direct provider, and direct location (across all supervisors)
@@ -104,8 +103,7 @@ overlap_by_direct AS (
         DirectServiceLocationName,
         SUM(OverlapHours) AS OverlapHours_Total
     FROM overlap
-    GROUP BY
-        ClientContactId, DirectProviderId, DirectServiceLocationName
+    GROUP BY ClientContactId, DirectProviderId, DirectServiceLocationName
 ),
 
 -- Direct-only = total direct minus overlapped (by direct location)
@@ -123,7 +121,48 @@ direct_only AS (
      AND od.DirectServiceLocationName = dt.DirectServiceLocationName
 ),
 
--- Names for direct-only
+-- ===== NEW: bring back supervision that does NOT overlap any direct =====
+
+-- Total supervision hours per (client, supervisor, supervisor location)
+supervision_totals AS (
+    SELECT
+        s.ClientContactId,
+        s.ClientFullName,
+        s.ProviderContactId AS SupervisorProviderId,
+        s.ServiceLocationName AS SupervisorServiceLocationName,
+        SUM(DATEDIFF(MINUTE, s.ServiceStartTime, s.ServiceEndTime)) / 60.0 AS SupervisionHours_Total
+    FROM supervision s
+    GROUP BY s.ClientContactId, s.ClientFullName, s.ProviderContactId, s.ServiceLocationName
+),
+
+-- Overlap attributed to each supervisor/location
+overlap_by_supervision AS (
+    SELECT
+        ClientContactId,
+        SupervisorProviderId,
+        SupervisorServiceLocationName,
+        SUM(OverlapHours) AS OverlapHours_Total
+    FROM overlap
+    GROUP BY ClientContactId, SupervisorProviderId, SupervisorServiceLocationName
+),
+
+-- Non-overlapped supervision only
+supervision_only AS (
+    SELECT
+        st.ClientContactId,
+        st.ClientFullName,
+        st.SupervisorProviderId,
+        st.SupervisorServiceLocationName,
+        CAST(st.SupervisionHours_Total - COALESCE(os.OverlapHours_Total, 0.0) AS DECIMAL(10,2)) AS SupervisionHours_NoDirect
+    FROM supervision_totals st
+    LEFT JOIN overlap_by_supervision os
+      ON os.ClientContactId = st.ClientContactId
+     AND os.SupervisorProviderId = st.SupervisorProviderId
+     AND os.SupervisorServiceLocationName = st.SupervisorServiceLocationName
+    WHERE (st.SupervisionHours_Total - COALESCE(os.OverlapHours_Total, 0.0)) > 0
+),
+
+-- Labels using your exact column layout
 named_direct_only AS (
     SELECT
         do.ClientContactId,
@@ -133,7 +172,7 @@ named_direct_only AS (
         pdir.LastName  AS DirectLastName,
         do.DirectServiceLocationName,
         do.DirectHours_NoSupervision AS DirectHours,
-        0.0 AS SupervisionHours,
+        CAST(0.0 AS DECIMAL(10,2)) AS SupervisionHours,
         NULL AS SupervisorFirstName,
         NULL AS SupervisorLastName,
         NULL AS SupervisorServiceLocationName,
@@ -143,7 +182,6 @@ named_direct_only AS (
       ON pdir.ContactId = do.DirectProviderId
 ),
 
--- Names for overlap rows
 named_overlap AS (
     SELECT
         o.ClientContactId,
@@ -163,6 +201,25 @@ named_overlap AS (
       ON pdir.ContactId = o.DirectProviderId
     LEFT JOIN [insights].[dw2].[Contacts] psup
       ON psup.ContactId = o.SupervisorProviderId
+),
+
+named_supervision_only AS (
+    SELECT
+        so.ClientContactId,
+        so.ClientFullName,
+        NULL AS DirectProviderId,
+        NULL AS DirectFirstName,
+        NULL AS DirectLastName,
+        NULL AS DirectServiceLocationName,
+        CAST(0.0 AS DECIMAL(10,2)) AS DirectHours,
+        so.SupervisionHours_NoDirect AS SupervisionHours,
+        psup.FirstName AS SupervisorFirstName,
+        psup.LastName  AS SupervisorLastName,
+        so.SupervisorServiceLocationName,
+        'Supervision without direct overlap' AS RowType
+    FROM supervision_only so
+    LEFT JOIN [insights].[dw2].[Contacts] psup
+      ON psup.ContactId = so.SupervisorProviderId
 )
 
 SELECT
@@ -182,6 +239,8 @@ FROM (
     SELECT * FROM named_direct_only
     UNION ALL
     SELECT * FROM named_overlap
+    UNION ALL
+    SELECT * FROM named_supervision_only
 ) x
 WHERE (x.DirectHours > 0 OR x.SupervisionHours > 0)
 ORDER BY
@@ -189,5 +248,5 @@ ORDER BY
     x.DirectLastName, x.DirectFirstName,
     x.SupervisorLastName, x.SupervisorFirstName,
     x.DirectServiceLocationName,
-    x.SupervisorServiceLocationName
+    x.SupervisorServiceLocationName;
 """
