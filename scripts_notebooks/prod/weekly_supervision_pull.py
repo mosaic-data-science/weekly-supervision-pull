@@ -95,7 +95,7 @@ class WeeklySupervisionPull:
                 return None
             
             # Extract dates from filenames using regex pattern
-            # Pattern matches: weekly_supervision_hours_YYYY-MM-DD.csv or august_2005_weekly_supervision_hours_YYYY-MM-DD.csv
+            # Pattern matches: weekly_supervision_hours_YYYY-MM-DD.csv
             date_pattern = r'(\d{4}-\d{2}-\d{2})'
             dates = []
             
@@ -377,12 +377,12 @@ class WeeklySupervisionPull:
         
         # Save raw data
         os.makedirs(self.raw_folder, exist_ok=True)
-        df.to_csv(f'{self.raw_folder}/august_2005_{self.raw_filename}', index=False)
+        df.to_csv(f'{self.raw_folder}/{self.raw_filename}', index=False)
         self.logger.info(f"Saved raw data: {self.raw_filename}")
         
         # Save transformed data
         os.makedirs(self.transformed_folder, exist_ok=True)
-        transformed_df.to_csv(f'{self.transformed_folder}/august_2005_{self.transformed_filename}', index=False)
+        transformed_df.to_csv(f'{self.transformed_folder}/{self.transformed_filename}', index=False)
         self.logger.info(f"Saved transformed data: {self.transformed_filename}")
     
     def upload_to_google_drive(self, df: pd.DataFrame, transformed_df: pd.DataFrame) -> None:
