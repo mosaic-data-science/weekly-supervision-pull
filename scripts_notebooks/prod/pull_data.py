@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""
+Phase 1: Data Pull Script
+
+This script pulls supervision hours data and BACB supervision data from the CR database
+and saves them as CSV files for downstream processing.
+
+Usage:
+    python pull_data.py [--start-date YYYY-MM-DD] [--raw-output PATH] [--bacb-output PATH]
+"""
+
+import pandas as pd
+import pyodbc
+import os
+import logging
+import re
+import argparse
+from datetime import datetime, timedelta
+from typing import Tuple
+from dotenv import load_dotenv
+from sql_queries import SUPERVISION_HOURS_SQL_TEMPLATE, BACB_SUPERVISION_TEMPLATE
+
+
+def setup_logging(log_dir: str = 'logs') -> logging.Logger:
+    """Set up logging configuration."""
+    # Ensure logs directory exists
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Create log file path
+    log_file = os.path.join(log_dir, 'pull_data.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+
+def get_latest_date_from_files(raw_folder: str) -> str:
+    """
+    Get the latest date from existing files in the raw_pulls folder.
+    
+    Args:
+        raw_folder (str): Path to raw pulls folder
+        
+    Returns:
+        str: Latest date found in YYYY-MM-DD format, or None if no files found
+    """
+    try:
+        if not os.path.exists(raw_folder):
+            return None
+        
+        # Get all CSV files in the raw_pulls folder
+        csv_files = [f for f in os.listdir(raw_folder) if f.endswith('.csv')]
+        
+        if not csv_files:
+            return None
+        
+        # Extract dates from filenames using regex pattern
+        date_pattern = r'(\d{4}-\d{2}-\d{2})'
+        dates = []
+        
+        for filename in csv_files:
+            match = re.search(date_pattern, filename)
+            if match:
+                dates.append(match.group(1))
+        
+        if not dates:
+            return None
+        
+        # Find the latest date
+        return max(dates)
+            
+    except Exception as e:
+        logging.warning(f"Error getting latest date from files: {e}")
+        return None
+
+
+def get_db_connection(server: str, username: str, password: str):
+    """
+    Create database connection with multiple driver fallback.
+    
+    Args:
+        server (str): Database server
+        username (str): Database username
+        password (str): Database password
+        
+    Returns:
+        pyodbc.Connection: Database connection
+    """
+    drivers_to_try = [
+        ('ODBC Driver 17 for SQL Server', ''),
+        ('ODBC Driver 18 for SQL Server', 'TrustServerCertificate=yes'),
+        ('SQL Server', ''),
+        ('ODBC Driver 18 for SQL Server', 'TrustServerCertificate=yes;Encrypt=no')
+    ]
+    
+    for driver, extra_params in drivers_to_try:
+        try:
+            conn_str = f'DRIVER={{{driver}}};SERVER={server};DATABASE=insights;UID={username};PWD={password}'
+            if extra_params:
+                conn_str += f';{extra_params}'
+            
+            logging.info(f"Attempting connection with {driver}")
+            conn = pyodbc.connect(conn_str)
+            logging.info(f"Successfully connected with {driver}")
+            return conn
+        except Exception as e:
+            logging.warning(f"Failed to connect with {driver}: {e}")
+            if driver == drivers_to_try[-1][0]:
+                raise
+            continue
+    
+    raise Exception("All ODBC drivers failed")
+
+
+def execute_supervision_query(conn, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Execute the main supervision hours SQL query.
+    
+    Args:
+        conn: Database connection
+        start_date (str): Start date in YYYY-MM-DD format
+        end_date (str): End date in YYYY-MM-DD format
+        
+    Returns:
+        pd.DataFrame: Query results
+    """
+    sql_query = SUPERVISION_HOURS_SQL_TEMPLATE.format(start_date=start_date, end_date=end_date)
+    logging.info(f"Executing supervision query with start_date: {start_date}, end_date: {end_date}")
+    df = pd.read_sql(sql_query, conn)
+    logging.info(f"Supervision query retrieved {len(df)} rows")
+    return df
+
+
+def execute_bacb_query(conn, start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Execute the BACB supervision SQL query.
+    
+    Args:
+        conn: Database connection
+        start_date (str): Start date in YYYY-MM-DD format
+        end_date (str): End date in YYYY-MM-DD format
+        
+    Returns:
+        pd.DataFrame: Query results
+    """
+    sql_query = BACB_SUPERVISION_TEMPLATE.format(start_date=start_date, end_date=end_date)
+    logging.info(f"Executing BACB query with start_date: {start_date}, end_date: {end_date}")
+    df = pd.read_sql(sql_query, conn)
+    logging.info(f"BACB query retrieved {len(df)} rows")
+    return df
+
+
+def pull_data_main(start_date: str = None, end_date: str = None, save_files: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Main function to pull data from database.
+    
+    Args:
+        start_date (str, optional): Start date in YYYY-MM-DD format. If None, will determine automatically.
+        end_date (str, optional): End date in YYYY-MM-DD format. If None, defaults to tomorrow.
+        save_files (bool): Whether to save files to disk. Default True.
+        
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame]: (supervision_df, bacb_df)
+    """
+    # Load environment variables
+    load_dotenv()
+    
+    # Set up logging
+    logger = setup_logging()
+    
+    # Database connection parameters
+    server = os.getenv('CR_DWH_SERVER')
+    username = os.getenv('CR_UN')
+    password = os.getenv('CR_PW')
+    
+    # Determine start date
+    if start_date:
+        logger.info(f"Using provided start date: {start_date}")
+    else:
+        # Try to get latest date from existing files
+        raw_folder = '../../data/raw_pulls'
+        latest_file_date = get_latest_date_from_files(raw_folder)
+        if latest_file_date:
+            start_date = latest_file_date
+            logger.info(f"Using latest date from existing files: {start_date}")
+        else:
+            # Fallback to 7 days ago
+            start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            logger.info(f"No existing files found, using default date: {start_date}")
+    
+    # Calculate end date (tomorrow to include all of today, unless provided)
+    if end_date is None:
+        end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    today = datetime.now().strftime('%Y-%m-%d')
+    
+    logger.info("="*50)
+    logger.info("Phase 1: Data Pulls")
+    logger.info("="*50)
+    logger.info(f"Start date: {start_date}, End date: {end_date}")
+    
+    # Connect to database
+    conn = get_db_connection(server, username, password)
+    
+    # Execute supervision query
+    logger.info("Pulling main supervision hours data...")
+    supervision_df = execute_supervision_query(conn, start_date, end_date)
+    
+    # Execute BACB query
+    logger.info("Pulling BACB supervision data...")
+    bacb_df = execute_bacb_query(conn, start_date, end_date)
+    
+    # Close connection
+    conn.close()
+    
+    if save_files:
+        # Save supervision data
+        raw_output = f'../../data/raw_pulls/weekly_supervision_hours_{today}.csv'
+        os.makedirs(os.path.dirname(raw_output), exist_ok=True)
+        supervision_df.to_csv(raw_output, index=False)
+        logger.info(f"Saved supervision data to: {raw_output}")
+        
+        # Save BACB data
+        bacb_output = f'../../data/raw_pulls/bacb_supervision_hours_{today}.csv'
+        os.makedirs(os.path.dirname(bacb_output), exist_ok=True)
+        bacb_df.to_csv(bacb_output, index=False)
+        logger.info(f"Saved BACB data to: {bacb_output}")
+    
+    logger.info("="*50)
+    logger.info(f"Data pull completed successfully!")
+    logger.info(f"Supervision: {len(supervision_df)} rows, BACB: {len(bacb_df)} rows")
+    logger.info("="*50)
+    
+    return supervision_df, bacb_df
+
+
+def main():
+    """CLI entry point for pull_data.py"""
+    parser = argparse.ArgumentParser(description='Pull supervision and BACB data from database')
+    parser.add_argument('--start-date', type=str, help='Start date in YYYY-MM-DD format')
+    parser.add_argument('--raw-output', type=str, default='../../data/raw_pulls/weekly_supervision_hours_{date}.csv',
+                       help='Output path for raw supervision data (use {date} placeholder)')
+    parser.add_argument('--bacb-output', type=str, default='../../data/raw_pulls/bacb_supervision_hours_{date}.csv',
+                       help='Output path for BACB data (use {date} placeholder)')
+    
+    args = parser.parse_args()
+    
+    try:
+        pull_data_main(start_date=args.start_date, save_files=True)
+        return 0
+    except Exception as e:
+        logging.error(f"Error in data pull: {e}")
+        raise
+
+
+if __name__ == "__main__":
+    exit(main())

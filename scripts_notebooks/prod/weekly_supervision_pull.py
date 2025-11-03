@@ -24,8 +24,11 @@ from googleapiclient.http import MediaIoBaseUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import google.oauth2.credentials as oauth2_creds
-from typing import Optional, List, Dict, Any
-from sql_queries import SUPERVISION_HOURS_SQL_TEMPLATE
+from typing import Optional, List, Dict, Any, Tuple
+from sql_queries import SUPERVISION_HOURS_SQL_TEMPLATE, BACB_SUPERVISION_TEMPLATE
+from pull_data import pull_data_main
+from transform_data import transform_data_main
+from merge_data import merge_data_main
 
 
 class WeeklySupervisionPull:
@@ -291,16 +294,98 @@ class WeeklySupervisionPull:
                     self.logger.info(f"Trying next driver...")
                     continue
     
+    def execute_bacb_query(self, start_date: str) -> pd.DataFrame:
+        """
+        Execute the BACB supervision query and return results as DataFrame.
+        
+        Args:
+            start_date (str): Start date for the query in YYYY-MM-DD format
+            
+        Returns:
+            pd.DataFrame: Query results with ProviderContactId, BACBSupervisionCodes_binary, BACBSupervisionHours
+        """
+        # Calculate end date (tomorrow to include all of today)
+        end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # Format the SQL query with the start and end dates
+        sql_query = BACB_SUPERVISION_TEMPLATE.format(start_date=start_date, end_date=end_date)
+        
+        self.logger.info(f"Executing BACB supervision query with start_date: {start_date}, end_date: {end_date}")
+        
+        # Try ODBC Driver 17 first (for collaborator compatibility), then fall back to other options
+        drivers_to_try = [
+            ('ODBC Driver 17 for SQL Server', ''),
+            ('ODBC Driver 18 for SQL Server', 'TrustServerCertificate=yes'),
+            ('SQL Server', ''),
+            ('ODBC Driver 18 for SQL Server', 'TrustServerCertificate=yes;Encrypt=no')
+        ]
+        
+        for driver, extra_params in drivers_to_try:
+            try:
+                # Build connection string with optional extra parameters
+                conn_str = f'DRIVER={{{driver}}};SERVER={self.server};DATABASE=insights;UID={self.username};PWD={self.password}'
+                if extra_params:
+                    conn_str += f';{extra_params}'
+                
+                self.logger.info(f"Attempting BACB query connection with {driver}")
+                conn = pyodbc.connect(conn_str)
+                df = pd.read_sql(sql_query, conn)
+                conn.close()
+                self.logger.info(f"BACB query executed successfully with {driver}. Retrieved {len(df)} rows.")
+                return df
+            except Exception as e:
+                self.logger.warning(f"Failed to connect with {driver}: {e}")
+                # Check if this is the last driver in the list
+                current_index = drivers_to_try.index((driver, extra_params))
+                if current_index == len(drivers_to_try) - 1:  # If this is the last driver to try
+                    self.logger.error(f"All ODBC drivers failed for BACB query. Last error: {e}")
+                    raise
+                else:
+                    self.logger.info(f"Trying next driver...")
+                    continue
+    
+    def pull_data(self, start_date: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Phase 1: Pull all data from the database.
+        
+        Executes both the main supervision hours query and the BACB supervision query.
+        
+        Args:
+            start_date (str): Start date for the queries in YYYY-MM-DD format
+            
+        Returns:
+            tuple[pd.DataFrame, pd.DataFrame]: Tuple of (raw_supervision_df, bacb_df)
+        """
+        self.logger.info("="*50)
+        self.logger.info("Phase 1: Data Pulls")
+        self.logger.info("="*50)
+        
+        # Execute main supervision SQL query
+        self.logger.info("Pulling main supervision hours data...")
+        df = self.execute_sql_query(start_date)
+        
+        # Execute BACB supervision query
+        self.logger.info("Pulling BACB supervision data...")
+        bacb_df = self.execute_bacb_query(start_date)
+        
+        self.logger.info(f"Data pull completed. Supervision: {len(df)} rows, BACB: {len(bacb_df)} rows")
+        return df, bacb_df
+    
     def transform_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Transform the raw data into the required format.
+        Phase 2: Transform the raw supervision data into the required format.
         
         Args:
             df (pd.DataFrame): Raw data from SQL query
             
         Returns:
-            pd.DataFrame: Transformed data
+            pd.DataFrame: Transformed data with Clinic, DirectProviderId, DirectProviderName, 
+                         DirectHours, SupervisionHours, PctOfDirectHoursSupervised
         """
+        self.logger.info("="*50)
+        self.logger.info("Phase 2: Data Transformation")
+        self.logger.info("="*50)
+        
         # Create direct provider name mapping
         direct_dict = {}
         for _, row in df.iterrows():
@@ -340,6 +425,53 @@ class WeeklySupervisionPull:
         
         self.logger.info(f"Data transformation completed. {len(transformed_df)} rows in transformed dataset.")
         return transformed_df
+    
+    def merge_data(self, transformed_df: pd.DataFrame, bacb_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Phase 3: Merge BACB supervision data with transformed supervision data.
+        
+        Joins BACB data onto the transformed DataFrame using DirectProviderId.
+        Handles missing values for providers without BACB supervision.
+        
+        Args:
+            transformed_df (pd.DataFrame): Transformed supervision data
+            bacb_df (pd.DataFrame): BACB supervision data with ProviderContactId
+            
+        Returns:
+            pd.DataFrame: Final merged DataFrame with all columns including BACB data
+        """
+        self.logger.info("="*50)
+        self.logger.info("Phase 3: Data Merge")
+        self.logger.info("="*50)
+        
+        # Join BACB data to transformed DataFrame
+        self.logger.info("Merging BACB supervision data...")
+        merged_df = transformed_df.merge(
+            bacb_df,
+            left_on='DirectProviderId',
+            right_on='ProviderContactId',
+            how='left'
+        )
+        
+        # Fill NaN values for BACB columns (providers without BACB supervision)
+        merged_df['BACBSupervisionCodes_binary'] = merged_df['BACBSupervisionCodes_binary'].fillna(0).astype(int)
+        merged_df['BACBSupervisionHours'] = merged_df['BACBSupervisionHours'].fillna(0.0)
+        
+        # Drop the ProviderContactId column since we're using DirectProviderId
+        merged_df.drop(columns=['ProviderContactId'], inplace=True, errors='ignore')
+        
+        # Reorder columns to include BACB data
+        column_order = [
+            'Clinic', 'DirectProviderId', 'DirectProviderName', 
+            'DirectHours', 'SupervisionHours', 'PctOfDirectHoursSupervised',
+            'BACBSupervisionCodes_binary', 'BACBSupervisionHours'
+        ]
+        # Only include columns that exist
+        column_order = [col for col in column_order if col in merged_df.columns]
+        merged_df = merged_df[column_order]
+        
+        self.logger.info(f"Data merge completed. Final dataset has {len(merged_df)} rows with BACB columns.")
+        return merged_df
     
     def archive_local_files(self) -> None:
         """Archive existing local files before saving new ones."""
@@ -453,17 +585,23 @@ class WeeklySupervisionPull:
             self.logger.info(f"Start date: {start_date}")
             self.logger.info("="*50)
             
-            # Execute SQL query
-            df = self.execute_sql_query(start_date)
+            # Phase 1: Pull all data from database (using separate script)
+            self.logger.info("Calling pull_data.py...")
+            raw_df, bacb_df = pull_data_main(start_date=start_date, save_files=True)
             
-            # Transform data
-            transformed_df = self.transform_data(df)
+            # Phase 2: Transform raw supervision data (using separate script)
+            self.logger.info("Calling transform_data.py...")
+            transformed_df = transform_data_main(df=raw_df, save_file=True)
+            
+            # Phase 3: Merge BACB data with transformed data (using separate script)
+            self.logger.info("Calling merge_data.py...")
+            final_df = merge_data_main(transformed_df=transformed_df, bacb_df=bacb_df, save_file=True)
             
             # Save files locally
-            self.save_local_files(df, transformed_df)
+            self.save_local_files(raw_df, final_df)
             
             # Upload to Google Drive
-            self.upload_to_google_drive(df, transformed_df)
+            self.upload_to_google_drive(raw_df, final_df)
             
             self.logger.info("="*50)
             self.logger.info("Weekly Supervision Hours Pull completed successfully!")

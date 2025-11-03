@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""
+Pipeline Orchestrator Script
+
+This script executes the three-phase data processing pipeline in order:
+1. pull_data.py - Pull data from database
+2. transform_data.py - Transform raw data
+3. merge_data.py - Merge BACB data with transformed data
+
+Usage:
+    python run_pipeline.py [--start-date YYYY-MM-DD]
+"""
+
+import sys
+import os
+import logging
+import argparse
+from datetime import datetime, timedelta
+from pull_data import pull_data_main
+from transform_data import transform_data_main
+from merge_data import merge_data_main
+
+
+def setup_logging(log_dir: str = 'logs') -> logging.Logger:
+    """Set up logging configuration."""
+    # Ensure logs directory exists
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Create log file path
+    log_file = os.path.join(log_dir, 'run_pipeline.log')
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+
+def get_latest_date_from_files(raw_folder: str = '../../data/raw_pulls') -> str:
+    """
+    Get the latest date from existing files in the raw_pulls folder.
+    
+    Args:
+        raw_folder (str): Path to raw pulls folder
+        
+    Returns:
+        str: Latest date found in YYYY-MM-DD format, or None if no files found
+    """
+    import re
+    
+    try:
+        if not os.path.exists(raw_folder):
+            return None
+        
+        # Get all CSV files in the raw_pulls folder
+        csv_files = [f for f in os.listdir(raw_folder) if f.endswith('.csv')]
+        
+        if not csv_files:
+            return None
+        
+        # Extract dates from filenames using regex pattern
+        date_pattern = r'(\d{4}-\d{2}-\d{2})'
+        dates = []
+        
+        for filename in csv_files:
+            match = re.search(date_pattern, filename)
+            if match:
+                dates.append(match.group(1))
+        
+        if not dates:
+            return None
+        
+        # Find the latest date
+        return max(dates)
+            
+    except Exception as e:
+        logging.warning(f"Error getting latest date from files: {e}")
+        return None
+
+
+def main():
+    """Main function to orchestrate the three-phase pipeline."""
+    parser = argparse.ArgumentParser(description='Run the three-phase data processing pipeline')
+    parser.add_argument('--start-date', type=str, help='Start date in YYYY-MM-DD format (optional)')
+    
+    args = parser.parse_args()
+    
+    # Set up logging
+    logger = setup_logging()
+    
+    logger.info("="*70)
+    logger.info("PIPELINE ORCHESTRATOR - Weekly Supervision Hours Processing")
+    logger.info("="*70)
+    
+    # Determine dates - using test dates for now
+    start_date = args.start_date
+    if start_date is None:
+        # Test dates: 10-01-2025 to 11-01-2025
+        start_date = '2025-10-01'
+        end_date = '2025-11-01'
+        logger.info(f"Using test dates: {start_date} to {end_date}")
+    else:
+        end_date = None  # Will default to tomorrow in pull_data_main
+        logger.info(f"Using provided start date: {start_date}")
+    
+    try:
+        # Phase 1: Pull data from database
+        logger.info("")
+        logger.info("="*70)
+        logger.info("PHASE 1: PULLING DATA FROM DATABASE")
+        logger.info("="*70)
+        logger.info("Executing pull_data.py...")
+        raw_df, bacb_df = pull_data_main(start_date=start_date, end_date=end_date, save_files=True)
+        logger.info("✓ Phase 1 completed successfully")
+        
+        # Phase 2: Transform data
+        logger.info("")
+        logger.info("="*70)
+        logger.info("PHASE 2: TRANSFORMING DATA")
+        logger.info("="*70)
+        logger.info("Executing transform_data.py...")
+        transformed_df = transform_data_main(df=raw_df, save_file=True)
+        logger.info("✓ Phase 2 completed successfully")
+        
+        # Phase 3: Merge data
+        logger.info("")
+        logger.info("="*70)
+        logger.info("PHASE 3: MERGING DATA")
+        logger.info("="*70)
+        logger.info("Executing merge_data.py...")
+        final_df = merge_data_main(transformed_df=transformed_df, bacb_df=bacb_df, save_file=True)
+        logger.info("✓ Phase 3 completed successfully")
+        
+        # Summary
+        logger.info("")
+        logger.info("="*70)
+        logger.info("PIPELINE COMPLETED SUCCESSFULLY!")
+        logger.info("="*70)
+        logger.info(f"Final output: {len(final_df)} rows")
+        logger.info(f"Columns: {', '.join(final_df.columns.tolist())}")
+        logger.info("="*70)
+        
+        return 0
+        
+    except Exception as e:
+        logger.error("="*70)
+        logger.error("PIPELINE FAILED!")
+        logger.error("="*70)
+        logger.error(f"Error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return 1
+
+
+if __name__ == "__main__":
+    exit(main())
+

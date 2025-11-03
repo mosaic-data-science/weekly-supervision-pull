@@ -4,8 +4,14 @@ SQL Query Templates for Weekly Supervision Pull
 This module contains all SQL query templates used by the weekly supervision pull script.
 """
 
+# Placeholder values for f-string evaluation 
+# These will be replaced with actual dates when .format() is called in pull_data.py
+# The f-string evaluates these to literal '{start_date}' strings which .format() can then replace
+start_date = '{start_date}'
+end_date = '{end_date}'
+
 # SQL query template for supervision hours data
-SUPERVISION_HOURS_SQL_TEMPLATE = """
+SUPERVISION_HOURS_SQL_TEMPLATE = f"""
 WITH base AS (
     SELECT
         b.BillingEntryId,  -- if available
@@ -22,8 +28,9 @@ WITH base AS (
     INNER JOIN [insights].[insights].[Client] AS c
         ON b.ClientContactId = c.ClientId
     WHERE b.ServiceEndTime >= '{start_date}'
-      AND b.ServiceEndTime <  '{end_date}'  -- includes all of end_date
+      AND b.ServiceEndTime <  '{end_date}'
       AND sc.ServiceCode IN ('97155','97153','Non-billable: PM Admin','PDS | BCBA')
+      AND b.ServiceLocationName LIKE '%Harrisburg Clinic%'
 ),
 direct AS (
     SELECT
@@ -121,7 +128,7 @@ direct_only AS (
      AND od.DirectServiceLocationName = dt.DirectServiceLocationName
 ),
 
--- ===== NEW: bring back supervision that does NOT overlap any direct =====
+-- ===== bring back supervision that does NOT overlap any direct =====
 
 -- Total supervision hours per (client, supervisor, supervisor location)
 supervision_totals AS (
@@ -249,4 +256,27 @@ ORDER BY
     x.SupervisorLastName, x.SupervisorFirstName,
     x.DirectServiceLocationName,
     x.SupervisorServiceLocationName;
+"""
+
+BACB_SUPERVISION_TEMPLATE = f"""
+-- PARAMETERS
+DECLARE @StartDate date = '{start_date}';
+DECLARE @EndDate   date = '{end_date}';
+
+SELECT
+    b.ProviderContactId,
+    BACBSupervisionCodes_binary = CAST(1 AS bit),
+    BACBSupervisionHours = CAST(SUM(DATEDIFF(MINUTE, b.ServiceStartTime, b.ServiceEndTime)) / 60.0 AS DECIMAL(10,2))
+FROM [insights].[dw2].[BillingEntriesCurrent] b
+JOIN [insights].[insights].[ServiceCode] sc
+  ON sc.ServiceCodeId = b.ServiceCodeId
+WHERE b.ServiceEndTime >= @StartDate
+  AND b.ServiceEndTime <  @EndDate
+  AND b.ProviderContactId IS NOT NULL
+  AND (
+        sc.ServiceCode LIKE '%BACB%Supervision%Meeting%client%'   -- (w/out client)
+     OR sc.ServiceCode LIKE '%VA%Medicaid%Supervision%client%'    -- (w/o Client)
+  )
+GROUP BY b.ProviderContactId
+ORDER BY b.ProviderContactId;
 """
