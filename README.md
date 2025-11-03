@@ -29,14 +29,21 @@ weekly-supervision-pull/
 │   ├── dev/                            # Development notebooks
 │   │   └── weekly_pull_dev.ipynb       # Development Jupyter notebook
 │   └── prod/                           # Production scripts
-│       ├── weekly_supervision_pull.py  # Main production script
+│       ├── run_pipeline.py             # Main orchestrator script (runs all phases)
+│       ├── pull_data.py                # Phase 1: Pull data from database
+│       ├── transform_data.py            # Phase 2: Transform raw data
+│       ├── merge_data.py                # Phase 3: Merge BACB data
+│       ├── weekly_supervision_pull.py  # Legacy script (includes Google Drive upload)
 │       ├── config.py                   # Configuration management
 │       ├── sql_queries.py              # SQL query templates
 │       ├── README.md                   # Production documentation
 │       └── logs/                       # Log files directory
 └── data/                               # Data storage (ignored by git)
     ├── raw_pulls/                      # Raw data files
+    │   ├── weekly_supervision_hours_*.csv
+    │   └── bacb_supervision_hours_*.csv
     └── transformed_supervision_weekly/  # Processed data files
+        ├── weekly_supervision_hours_transformed_*.csv
         └── archived/                   # Archived files
 ```
 
@@ -75,7 +82,27 @@ weekly-supervision-pull/
 
 ### Usage
 
-**Production Script**:
+**Run Full Pipeline** (Recommended):
+```bash
+cd scripts_notebooks/prod
+python run_pipeline.py
+```
+
+**Run Individual Phases**:
+```bash
+cd scripts_notebooks/prod
+
+# Phase 1: Pull data from database
+python pull_data.py
+
+# Phase 2: Transform raw data
+python transform_data.py
+
+# Phase 3: Merge BACB data
+python merge_data.py
+```
+
+**Legacy Script** (includes Google Drive upload):
 ```bash
 cd scripts_notebooks/prod
 python weekly_supervision_pull.py
@@ -148,11 +175,29 @@ Raw data is transformed into:
 
 ## Workflow
 
-1. **Data Extraction**: Query database for supervision hours data
-2. **Data Processing**: Transform raw data into structured format
-3. **Local Storage**: Save files locally with automatic archiving
-4. **Cloud Upload**: Upload to Google Drive with archiving
-5. **Logging**: Comprehensive logging for monitoring and debugging
+The pipeline consists of three distinct phases:
+
+1. **Phase 1: Data Pull** (`pull_data.py`)
+   - Executes main supervision hours query
+   - Executes BACB supervision query
+   - Saves raw data CSVs
+
+2. **Phase 2: Data Transformation** (`transform_data.py`)
+   - Reads raw supervision data
+   - Groups and aggregates by provider and location
+   - Extracts clinic names and calculates supervision percentages
+   - Saves transformed CSV
+
+3. **Phase 3: Data Merge** (`merge_data.py`)
+   - Merges BACB supervision data with transformed data
+   - Archives existing files before saving
+   - Creates final output with all columns
+
+4. **Optional: Google Drive Upload** (`weekly_supervision_pull.py`)
+   - Uploads raw and transformed files to Google Drive
+   - Handles archiving in Google Drive
+
+Each phase logs its progress independently and can be run standalone or as part of the full pipeline.
 
 ## Development
 
@@ -171,10 +216,17 @@ Raw data is transformed into:
 
 ### Code Structure
 
-- **`weekly_supervision_pull.py`**: Main production script
-- **`sql_queries.py`**: SQL templates and queries
+**Pipeline Scripts:**
+- **`run_pipeline.py`**: Main orchestrator that runs all three phases
+- **`pull_data.py`**: Phase 1 - Pulls data from database
+- **`transform_data.py`**: Phase 2 - Transforms raw data
+- **`merge_data.py`**: Phase 3 - Merges BACB data with transformed data
+
+**Supporting Files:**
+- **`weekly_supervision_pull.py`**: Legacy script (includes Google Drive upload)
+- **`sql_queries.py`**: SQL query templates
 - **`config.py`**: Configuration management
-- **`logs/`**: Comprehensive logging system
+- **`logs/`**: Comprehensive logging system (separate logs for each script)
 
 ## Monitoring & Logging
 
@@ -196,11 +248,11 @@ Raw data is transformed into:
 
 ### Scheduling
 
-The script can be scheduled using:
+The pipeline can be scheduled using:
 
 - **Cron** (Linux/Mac):
   ```bash
-  0 9 * * 1 cd /path/to/project && python scripts_notebooks/prod/weekly_supervision_pull.py
+  0 9 * * 1 cd /path/to/project/scripts_notebooks/prod && python run_pipeline.py
   ```
 
 - **Task Scheduler** (Windows)
