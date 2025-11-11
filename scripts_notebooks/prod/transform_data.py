@@ -45,7 +45,7 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
         
     Returns:
         pd.DataFrame: Transformed data with Clinic, DirectProviderId, DirectProviderName, 
-                     DirectHours, SupervisionHours, PctOfDirectHoursSupervised
+                     DirectHours, SupervisionHours
     """
     logger.info("="*50)
     logger.info("Phase 2: Data Transformation")
@@ -65,11 +65,6 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
         'SupervisionHours': 'sum'
     }).reset_index()
     
-    # Calculate percentage of direct hours supervised
-    transformed_df['PctOfDirectHoursSupervised'] = round(
-        100 * (transformed_df['SupervisionHours'] / transformed_df['DirectHours']), 2
-    )
-    
     # Filter for ORGANIZATION locations and clean clinic names
     transformed_df = transformed_df[transformed_df['DirectServiceLocationName'].str.contains('ORGANIZATION')].reset_index(drop=True)
     transformed_df['Clinic'] = [val.split('ORGANIZATION: ')[1] for val in transformed_df['DirectServiceLocationName']]
@@ -84,7 +79,7 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
     # Reorder columns and sort
     transformed_df = transformed_df[[
         'Clinic', 'DirectProviderId', 'DirectProviderName', 
-        'DirectHours', 'SupervisionHours', 'PctOfDirectHoursSupervised'
+        'DirectHours', 'SupervisionHours'
     ]]
     transformed_df = transformed_df.sort_values(by=['Clinic', 'DirectProviderName'], ascending=True)
     
