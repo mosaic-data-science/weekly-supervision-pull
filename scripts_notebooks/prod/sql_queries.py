@@ -30,7 +30,7 @@ WITH base AS (
     WHERE b.ServiceEndTime >= '{start_date}'
       AND b.ServiceEndTime <  '{end_date}'
       AND sc.ServiceCode IN ('97155','97153','Non-billable: PM Admin','PDS | BCBA')
-      AND b.ServiceLocationName LIKE '%Harrisburg Clinic%'
+      AND b.ServiceLocationName LIKE '%Harrisburg%'
 ),
 direct AS (
     SELECT

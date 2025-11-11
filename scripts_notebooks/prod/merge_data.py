@@ -7,9 +7,6 @@ creates the final output file with all columns including BACB data.
 
 Usage:
     python merge_data.py [--transformed-input PATH] [--bacb-input PATH] [--output PATH]
-
-Author: Generated from weekly_supervision_pull.py
-Date: 2025-01-27
 """
 
 import pandas as pd
@@ -18,6 +15,9 @@ import shutil
 import logging
 import argparse
 from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
+from openpyxl.styles import PatternFill
 
 
 def setup_logging(log_dir: str = 'logs') -> logging.Logger:
@@ -37,6 +37,88 @@ def setup_logging(log_dir: str = 'logs') -> logging.Logger:
         ]
     )
     return logging.getLogger(__name__)
+
+
+def adjust_column_widths(ws, logger):
+    """
+    Adjust column widths to fit the content (header + data).
+    
+    Args:
+        ws: openpyxl worksheet object
+        logger: Logger instance
+    """
+    from openpyxl.utils import get_column_letter
+    
+    # Iterate through all columns
+    for col_idx, column in enumerate(ws.iter_cols(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column), start=1):
+        max_length = 0
+        column_letter = get_column_letter(col_idx)
+        
+        # Check header cell
+        header_cell = ws[f'{column_letter}1']
+        if header_cell.value:
+            max_length = max(max_length, len(str(header_cell.value)))
+        
+        # Check data cells (sample first 100 rows for performance)
+        for row_idx, cell in enumerate(column[1:], start=2):  # Skip header row
+            if cell.value is not None:
+                cell_value = str(cell.value)
+                # For numbers, consider formatted length
+                if isinstance(cell.value, (int, float)):
+                    # Estimate formatted length (add some padding for decimals)
+                    cell_length = len(f"{cell.value:.2f}")
+                else:
+                    cell_length = len(cell_value)
+                max_length = max(max_length, cell_length)
+            
+            # Sample only first 100 data rows for performance
+            if row_idx > 100:
+                break
+        
+        # Set column width (add padding, min 10, max 50)
+        width = min(max(max_length + 2, 10), 50)
+        ws.column_dimensions[column_letter].width = width
+
+
+def save_to_google_drive_folder(source_file: str, target_folder: str, logger: logging.Logger):
+    """
+    Save the Excel file to Google Drive folder and archive existing files.
+    
+    Args:
+        source_file (str): Path to the source Excel file
+        target_folder (str): Path to the target Google Drive folder
+        logger: Logger instance
+    """
+    # Ensure target folder exists
+    os.makedirs(target_folder, exist_ok=True)
+    
+    # Create archive folder in target location
+    archive_folder = os.path.join(target_folder, 'archived')
+    os.makedirs(archive_folder, exist_ok=True)
+    
+    # Archive existing .xlsx files in target folder
+    output_filename = os.path.basename(source_file)
+    if os.path.exists(target_folder):
+        existing_files = [f for f in os.listdir(target_folder) 
+                        if f.endswith('.xlsx') and f != output_filename]
+        
+        for file in existing_files:
+            source_path = os.path.join(target_folder, file)
+            archive_path = os.path.join(archive_folder, file)
+            
+            # If file already exists in archive, add timestamp to avoid conflicts
+            if os.path.exists(archive_path):
+                name, ext = os.path.splitext(file)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                archive_path = os.path.join(archive_folder, f'{name}_{timestamp}{ext}')
+            
+            shutil.move(source_path, archive_path)
+            logger.info(f"Archived existing file in Google Drive folder: {file}")
+    
+    # Copy the file to Google Drive folder
+    target_file = os.path.join(target_folder, output_filename)
+    shutil.copy2(source_file, target_file)
+    logger.info(f"Saved file to Google Drive folder: {target_file}")
 
 
 def merge_data(transformed_df: pd.DataFrame, bacb_df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
@@ -71,14 +153,30 @@ def merge_data(transformed_df: pd.DataFrame, bacb_df: pd.DataFrame, logger: logg
     merged_df['BACBSupervisionCodes_binary'] = merged_df['BACBSupervisionCodes_binary'].fillna(0).astype(int)
     merged_df['BACBSupervisionHours'] = merged_df['BACBSupervisionHours'].fillna(0.0)
     
+    # Rename column and convert 1/0 to Yes/No
+    merged_df['BACBSupervisionCodesOccurred'] = merged_df['BACBSupervisionCodes_binary'].map({1: 'Yes', 0: 'No'})
+    merged_df.drop(columns=['BACBSupervisionCodes_binary'], inplace=True, errors='ignore')
+    
     # Drop the ProviderContactId column since we're using DirectProviderId
     merged_df.drop(columns=['ProviderContactId'], inplace=True, errors='ignore')
+    
+    # Add TotalSupervisionHours column (sum of SupervisionHours and BACBSupervisionHours)
+    if 'SupervisionHours' in merged_df.columns and 'BACBSupervisionHours' in merged_df.columns:
+        merged_df['TotalSupervisionHours'] = merged_df['SupervisionHours'].fillna(0) + merged_df['BACBSupervisionHours'].fillna(0)
+        logger.info("Added TotalSupervisionHours column (SupervisionHours + BACBSupervisionHours)")
+    
+    # Calculate percentage of direct hours supervised using TotalSupervisionHours
+    if 'TotalSupervisionHours' in merged_df.columns and 'DirectHours' in merged_df.columns:
+        merged_df['PctOfDirectHoursSupervised'] = round(
+            100 * (merged_df['TotalSupervisionHours'] / merged_df['DirectHours'].replace(0, pd.NA)), 2
+        )
+        logger.info("Added PctOfDirectHoursSupervised column (100 * TotalSupervisionHours / DirectHours)")
     
     # Reorder columns to include BACB data
     column_order = [
         'Clinic', 'DirectProviderId', 'DirectProviderName', 
         'DirectHours', 'SupervisionHours', 'PctOfDirectHoursSupervised',
-        'BACBSupervisionCodes_binary', 'BACBSupervisionHours'
+        'BACBSupervisionCodesOccurred', 'BACBSupervisionHours', 'TotalSupervisionHours'
     ]
     # Only include columns that exist
     column_order = [col for col in column_order if col in merged_df.columns]
@@ -110,14 +208,21 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
     if transformed_df is None:
         if transformed_file is None:
             today = datetime.now().strftime('%Y-%m-%d')
-            transformed_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.csv'
+            # Try .xlsx first, fallback to .csv for backward compatibility
+            xlsx_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.xlsx'
+            csv_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.csv'
+            transformed_file = xlsx_file if os.path.exists(xlsx_file) else csv_file
         
         if not os.path.exists(transformed_file):
             logger.error(f"Transformed input file not found: {transformed_file}")
             raise FileNotFoundError(f"Transformed input file not found: {transformed_file}")
         
         logger.info(f"Reading transformed data from: {transformed_file}")
-        transformed_df = pd.read_csv(transformed_file)
+        # Read CSV or Excel based on file extension
+        if transformed_file.endswith('.xlsx'):
+            transformed_df = pd.read_excel(transformed_file, engine='openpyxl')
+        else:
+            transformed_df = pd.read_csv(transformed_file)
         logger.info(f"Loaded {len(transformed_df)} rows from transformed file")
     else:
         logger.info(f"Using provided transformed DataFrame with {len(transformed_df)} rows")
@@ -144,18 +249,18 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
     if save_file:
         # Archive existing files before saving new one
         today = datetime.now().strftime('%Y-%m-%d')
-        output_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.csv'
+        output_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.xlsx'
         archive_folder = f'../../data/transformed_supervision_weekly/archived'
         
         # Ensure directories exist
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         os.makedirs(archive_folder, exist_ok=True)
         
-        # Archive existing CSV files (excluding the one we're about to create)
+        # Archive existing files (CSV and XLSX, excluding the one we're about to create)
         output_filename = os.path.basename(output_file)
         if os.path.exists(os.path.dirname(output_file)):
             existing_files = [f for f in os.listdir(os.path.dirname(output_file)) 
-                            if f.endswith('.csv') and f != output_filename]
+                            if (f.endswith('.csv') or f.endswith('.xlsx')) and f != output_filename]
             
             for file in existing_files:
                 source_path = os.path.join(os.path.dirname(output_file), file)
@@ -170,9 +275,197 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                 shutil.move(source_path, archive_path)
                 logger.info(f"Archived existing file: {file}")
         
-        # Save final data
-        final_df.to_csv(output_file, index=False)
-        logger.info(f"Saved final merged data to: {output_file}")
+        # Group data by Clinic and save as Excel with separate sheets
+        if 'Clinic' in final_df.columns:
+            clinics = final_df['Clinic'].unique()
+            logger.info(f"Saving Excel file with {len(clinics)} clinic sheets: {', '.join(clinics)}")
+            
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                for clinic in sorted(clinics):
+                    clinic_data = final_df[final_df['Clinic'] == clinic].copy()
+                    
+                    # Sort by PctOfDirectHoursSupervised (lowest values first)
+                    if 'PctOfDirectHoursSupervised' in clinic_data.columns:
+                        clinic_data = clinic_data.sort_values('PctOfDirectHoursSupervised', ascending=True, na_position='last')
+                        logger.info(f"  - Sorted {len(clinic_data)} rows by PctOfDirectHoursSupervised (ascending)")
+                    
+                    # Excel sheet names must be <= 31 characters and can't contain certain characters
+                    sheet_name = str(clinic)[:31].replace('/', '_').replace('\\', '_').replace('?', '_').replace('*', '_').replace('[', '_').replace(']', '_').replace(':', '_')
+                    clinic_data.to_excel(writer, sheet_name=sheet_name, index=False)
+                    logger.info(f"  - Saved {len(clinic_data)} rows to sheet '{sheet_name}'")
+            
+            # Add conditional formatting after writing
+            logger.info("Adding conditional formatting to Excel file...")
+            wb = load_workbook(output_file)
+            
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                
+                # Find the column index for PctOfDirectHoursSupervised
+                header_row = 1
+                pct_col_idx = None
+                for cell in ws[header_row]:
+                    if cell.value == 'PctOfDirectHoursSupervised':
+                        pct_col_idx = cell.column_letter
+                        break
+                
+                if pct_col_idx:
+                    # Get the last row with data
+                    max_row = ws.max_row
+                    data_range = f'{pct_col_idx}2:{pct_col_idx}{max_row}'
+                    
+                    # Add conditional formatting with discrete ranges:
+                    # 0-5% = Red background (inclusive)
+                    # >5% and <10% = Yellow background
+                    # >=10% = Green background
+                    
+                    # Red background for <= 5%
+                    red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                    red_rule = CellIsRule(operator='lessThanOrEqual', formula=[5.0], fill=red_fill)
+                    ws.conditional_formatting.add(data_range, red_rule)
+                    
+                    # Yellow background for > 5% and < 10% (using formula for proper AND logic)
+                    yellow_fill = PatternFill(start_color='FFD93D', end_color='FFD93D', fill_type='solid')
+                    # Use FormulaRule with relative reference - Excel will adjust for each cell
+                    yellow_formula = f'AND({pct_col_idx}2>5, {pct_col_idx}2<10)'
+                    yellow_rule = FormulaRule(formula=[yellow_formula], fill=yellow_fill)
+                    ws.conditional_formatting.add(data_range, yellow_rule)
+                    
+                    # Green background for >= 10%
+                    green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                    green_rule = CellIsRule(operator='greaterThanOrEqual', formula=[10.0], fill=green_fill)
+                    ws.conditional_formatting.add(data_range, green_rule)
+                    
+                    logger.info(f"  - Added conditional formatting to column {pct_col_idx} in sheet '{sheet_name}' (0-5% red, >5-<10% yellow, >=10% green)")
+                
+                # Find the column index for BACBSupervisionCodesOccurred and add conditional formatting
+                bacb_col_idx = None
+                for cell in ws[header_row]:
+                    if cell.value == 'BACBSupervisionCodesOccurred':
+                        bacb_col_idx = cell.column_letter
+                        break
+                
+                if bacb_col_idx:
+                    max_row = ws.max_row
+                    bacb_data_range = f'{bacb_col_idx}2:{bacb_col_idx}{max_row}'
+                    
+                    # Red background for "No"
+                    red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                    red_formula = f'{bacb_col_idx}2="No"'
+                    red_rule = FormulaRule(formula=[red_formula], fill=red_fill)
+                    ws.conditional_formatting.add(bacb_data_range, red_rule)
+                    
+                    # Green background for "Yes"
+                    green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                    green_formula = f'{bacb_col_idx}2="Yes"'
+                    green_rule = FormulaRule(formula=[green_formula], fill=green_fill)
+                    ws.conditional_formatting.add(bacb_data_range, green_rule)
+                    
+                    logger.info(f"  - Added conditional formatting to column {bacb_col_idx} in sheet '{sheet_name}' (No=red, Yes=green)")
+                
+                # Adjust column widths to fit content
+                logger.info(f"  - Adjusting column widths for sheet '{sheet_name}'...")
+                adjust_column_widths(ws, logger)
+            
+            wb.save(output_file)
+            logger.info(f"Saved final merged data to Excel file: {output_file}")
+            
+            # Also save to Google Drive folder
+            google_drive_folder = '/Users/davidjcox/Library/CloudStorage/GoogleDrive-dcox@mosaictherapy.com/.shortcut-targets-by-id/1Mh9gqV27KkEEuyX6M35_SB_vTErRz7Gm/DailyRBTTracking'
+            try:
+                save_to_google_drive_folder(output_file, google_drive_folder, logger)
+            except Exception as e:
+                logger.warning(f"Failed to save to Google Drive folder: {e}")
+        else:
+            # Fallback: save as single sheet if Clinic column doesn't exist
+            logger.warning("'Clinic' column not found, saving as single sheet")
+            
+            # Sort by PctOfDirectHoursSupervised (lowest values first)
+            if 'PctOfDirectHoursSupervised' in final_df.columns:
+                final_df = final_df.sort_values('PctOfDirectHoursSupervised', ascending=True, na_position='last')
+                logger.info(f"Sorted {len(final_df)} rows by PctOfDirectHoursSupervised (ascending)")
+            
+            final_df.to_excel(output_file, index=False, engine='openpyxl')
+            
+            # Add conditional formatting
+            logger.info("Adding conditional formatting to Excel file...")
+            wb = load_workbook(output_file)
+            ws = wb.active
+            
+            # Find the column index for PctOfDirectHoursSupervised
+            header_row = 1
+            pct_col_idx = None
+            for cell in ws[header_row]:
+                if cell.value == 'PctOfDirectHoursSupervised':
+                    pct_col_idx = cell.column_letter
+                    break
+            
+            if pct_col_idx:
+                max_row = ws.max_row
+                data_range = f'{pct_col_idx}2:{pct_col_idx}{max_row}'
+                
+                # Add conditional formatting with discrete ranges:
+                # 0-5% = Red background (inclusive)
+                # >5% and <10% = Yellow background
+                # >=10% = Green background
+                
+                # Red background for <= 5%
+                red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                red_rule = CellIsRule(operator='lessThanOrEqual', formula=[5.0], fill=red_fill)
+                ws.conditional_formatting.add(data_range, red_rule)
+                
+                # Yellow background for > 5% and < 10% (using formula for proper AND logic)
+                yellow_fill = PatternFill(start_color='FFD93D', end_color='FFD93D', fill_type='solid')
+                # Use FormulaRule with relative reference - Excel will adjust for each cell
+                yellow_formula = f'AND({pct_col_idx}2>5, {pct_col_idx}2<10)'
+                yellow_rule = FormulaRule(formula=[yellow_formula], fill=yellow_fill)
+                ws.conditional_formatting.add(data_range, yellow_rule)
+                
+                # Green background for >= 10%
+                green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                green_rule = CellIsRule(operator='greaterThanOrEqual', formula=[10.0], fill=green_fill)
+                ws.conditional_formatting.add(data_range, green_rule)
+                
+                logger.info(f"Added conditional formatting to column {pct_col_idx} (0-5% red, >5-<10% yellow, >=10% green)")
+            
+            # Find the column index for BACBSupervisionCodesOccurred and add conditional formatting
+            bacb_col_idx = None
+            for cell in ws[header_row]:
+                if cell.value == 'BACBSupervisionCodesOccurred':
+                    bacb_col_idx = cell.column_letter
+                    break
+            
+            if bacb_col_idx:
+                max_row = ws.max_row
+                bacb_data_range = f'{bacb_col_idx}2:{bacb_col_idx}{max_row}'
+                
+                # Red background for "No"
+                red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                red_formula = f'{bacb_col_idx}2="No"'
+                red_rule = FormulaRule(formula=[red_formula], fill=red_fill)
+                ws.conditional_formatting.add(bacb_data_range, red_rule)
+                
+                # Green background for "Yes"
+                green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                green_formula = f'{bacb_col_idx}2="Yes"'
+                green_rule = FormulaRule(formula=[green_formula], fill=green_fill)
+                ws.conditional_formatting.add(bacb_data_range, green_rule)
+                
+                logger.info(f"Added conditional formatting to column {bacb_col_idx} (No=red, Yes=green)")
+            
+            # Adjust column widths to fit content
+            logger.info("Adjusting column widths...")
+            adjust_column_widths(ws, logger)
+            
+            wb.save(output_file)
+            logger.info(f"Saved final merged data to: {output_file}")
+            
+            # Also save to Google Drive folder
+            google_drive_folder = '/Users/davidjcox/Library/CloudStorage/GoogleDrive-dcox@mosaictherapy.com/.shortcut-targets-by-id/1Mh9gqV27KkEEuyX6M35_SB_vTErRz7Gm/DailyRBTTracking'
+            try:
+                save_to_google_drive_folder(output_file, google_drive_folder, logger)
+            except Exception as e:
+                logger.warning(f"Failed to save to Google Drive folder: {e}")
     
     logger.info("="*50)
     logger.info("Data merge completed successfully!")
@@ -191,8 +484,8 @@ def main():
                        default='../../data/raw_pulls/bacb_supervision_hours_{date}.csv',
                        help='Input CSV file path for BACB data (use {date} placeholder)')
     parser.add_argument('--output', type=str,
-                       default='../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{date}.csv',
-                       help='Output CSV file path (use {date} placeholder)')
+                       default='../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{date}.xlsx',
+                       help='Output Excel file path (use {date} placeholder)')
     
     args = parser.parse_args()
     
