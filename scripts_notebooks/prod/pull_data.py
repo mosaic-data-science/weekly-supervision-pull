@@ -220,7 +220,7 @@ def pull_data_main(start_date: str = None, end_date: str = None, save_files: boo
     
     if save_files:
         # Save supervision data
-        raw_output = f'../../data/raw_pulls/weekly_supervision_hours_{today}.csv'
+        raw_output = f'../../data/raw_pulls/daily_supervision_hours_{today}.csv'
         os.makedirs(os.path.dirname(raw_output), exist_ok=True)
         supervision_df.to_csv(raw_output, index=False)
         logger.info(f"Saved supervision data to: {raw_output}")
@@ -243,7 +243,7 @@ def main():
     """CLI entry point for pull_data.py"""
     parser = argparse.ArgumentParser(description='Pull supervision and BACB data from database')
     parser.add_argument('--start-date', type=str, help='Start date in YYYY-MM-DD format')
-    parser.add_argument('--raw-output', type=str, default='../../data/raw_pulls/weekly_supervision_hours_{date}.csv',
+    parser.add_argument('--raw-output', type=str, default='../../data/raw_pulls/daily_supervision_hours_{date}.csv',
                        help='Output path for raw supervision data (use {date} placeholder)')
     parser.add_argument('--bacb-output', type=str, default='../../data/raw_pulls/bacb_supervision_hours_{date}.csv',
                        help='Output path for BACB data (use {date} placeholder)')

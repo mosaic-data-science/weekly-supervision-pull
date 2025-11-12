@@ -51,6 +51,29 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
     logger.info("Phase 2: Data Transformation")
     logger.info("="*50)
     
+    # Identify all supervisors (people who appear in Supervisor columns)
+    supervisors = set()
+    for _, row in df.iterrows():
+        if pd.notna(row['SupervisorFirstName']) and pd.notna(row['SupervisorLastName']):
+            supervisor_name = (row['SupervisorFirstName'], row['SupervisorLastName'])
+            supervisors.add(supervisor_name)
+    
+    logger.info(f"Found {len(supervisors)} unique supervisors in the data")
+    
+    # Remove rows where direct provider matches any supervisor
+    initial_count = len(df)
+    df = df[~(
+        df['DirectFirstName'].notna() & 
+        df['DirectLastName'].notna() & 
+        df.apply(lambda row: (row['DirectFirstName'], row['DirectLastName']) in supervisors, axis=1)
+    )].reset_index(drop=True)
+    removed_count = initial_count - len(df)
+    
+    if removed_count > 0:
+        logger.info(f"Removed {removed_count} rows where direct provider also appears as supervisor")
+    else:
+        logger.info("No rows removed (no direct providers matched supervisors)")
+    
     # Create direct provider name mapping
     direct_dict = {}
     for _, row in df.iterrows():
@@ -107,7 +130,7 @@ def transform_data_main(df: pd.DataFrame = None, input_file: str = None, save_fi
         if input_file is None:
             # Default to today's file
             today = datetime.now().strftime('%Y-%m-%d')
-            input_file = f'../../data/raw_pulls/weekly_supervision_hours_{today}.csv'
+            input_file = f'../../data/raw_pulls/daily_supervision_hours_{today}.csv'
         
         if not os.path.exists(input_file):
             logger.error(f"Input file not found: {input_file}")
@@ -125,7 +148,7 @@ def transform_data_main(df: pd.DataFrame = None, input_file: str = None, save_fi
     if save_file:
         # Save transformed data
         today = datetime.now().strftime('%Y-%m-%d')
-        output_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.csv'
+        output_file = f'../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{today}.csv'
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
         transformed_df.to_csv(output_file, index=False)
         logger.info(f"Saved transformed data to: {output_file}")
@@ -141,10 +164,10 @@ def main():
     """CLI entry point for transform_data.py"""
     parser = argparse.ArgumentParser(description='Transform raw supervision data')
     parser.add_argument('--input', type=str, 
-                       default='../../data/raw_pulls/weekly_supervision_hours_{date}.csv',
+                       default='../../data/raw_pulls/daily_supervision_hours_{date}.csv',
                        help='Input CSV file path (use {date} placeholder for today)')
     parser.add_argument('--output', type=str,
-                       default='../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{date}.csv',
+                       default='../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{date}.csv',
                        help='Output CSV file path (use {date} placeholder for today)')
     
     args = parser.parse_args()
