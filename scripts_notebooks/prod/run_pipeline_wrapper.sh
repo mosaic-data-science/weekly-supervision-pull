@@ -20,10 +20,21 @@ cd "$PROJECT_DIR" || exit 1
 
 # Activate virtual environment and run the pipeline
 source venv/bin/activate
-python3 "$PROJECT_DIR/scripts_notebooks/prod/run_pipeline.py"
+
+# Use the venv's Python explicitly
+PYTHON_VENV="$PROJECT_DIR/venv/bin/python3"
+
+# Run the pipeline
+$PYTHON_VENV "$PROJECT_DIR/scripts_notebooks/prod/run_pipeline.py"
 
 # Capture exit code
 EXIT_CODE=$?
+
+# Send email notification based on exit code
+# Don't fail the wrapper if email sending fails, but log it
+echo "Pipeline completed with exit code: $EXIT_CODE"
+echo "Sending email notification..."
+$PYTHON_VENV "$PROJECT_DIR/scripts_notebooks/prod/send_email.py" $EXIT_CODE || echo "Warning: Email sending failed, but continuing..."
 
 # Deactivate virtual environment
 deactivate
