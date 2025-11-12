@@ -1,7 +1,7 @@
 """
-SQL Query Templates for Weekly Supervision Pull
+SQL Query Templates for Daily Supervision Pull
 
-This module contains all SQL query templates used by the weekly supervision pull script.
+This module contains all SQL query templates used by the daily supervision pull script.
 """
 
 # Placeholder values for f-string evaluation 
@@ -30,7 +30,6 @@ WITH base AS (
     WHERE b.ServiceEndTime >= '{start_date}'
       AND b.ServiceEndTime <  '{end_date}'
       AND sc.ServiceCode IN ('97155','97153','Non-billable: PM Admin','PDS | BCBA')
-      AND b.ServiceLocationName LIKE '%Harrisburg%'
 ),
 direct AS (
     SELECT

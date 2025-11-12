@@ -93,19 +93,21 @@ def main():
     logger = setup_logging()
     
     logger.info("="*70)
-    logger.info("PIPELINE ORCHESTRATOR - Weekly Supervision Hours Processing")
+    logger.info("PIPELINE ORCHESTRATOR - Daily Supervision Hours Processing")
     logger.info("="*70)
     
-    # Determine dates - using test dates for now
-    start_date = args.start_date
-    if start_date is None:
-        # Test dates: 10-01-2025 to 11-01-2025
-        start_date = '2025-10-01'
-        end_date = '2025-11-01'
-        logger.info(f"Using test dates: {start_date} to {end_date}")
-    else:
+    # Determine dates
+    if args.start_date:
+        # If start date is provided, use it
+        start_date = args.start_date
         end_date = None  # Will default to tomorrow in pull_data_main
         logger.info(f"Using provided start date: {start_date}")
+    else:
+        # Default: start of current month to today (not including today)
+        now = datetime.now()
+        start_date = now.replace(day=1).strftime('%Y-%m-%d')  # First day of current month
+        end_date = now.strftime('%Y-%m-%d')  # Today (exclusive in SQL, so up to but not including)
+        logger.info(f"Using default dates: {start_date} to {end_date} (start of month to today, exclusive)")
     
     try:
         # Phase 1: Pull data from database

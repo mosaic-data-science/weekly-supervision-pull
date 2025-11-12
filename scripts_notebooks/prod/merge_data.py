@@ -209,8 +209,8 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
         if transformed_file is None:
             today = datetime.now().strftime('%Y-%m-%d')
             # Try .xlsx first, fallback to .csv for backward compatibility
-            xlsx_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.xlsx'
-            csv_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.csv'
+            xlsx_file = f'../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{today}.xlsx'
+            csv_file = f'../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{today}.csv'
             transformed_file = xlsx_file if os.path.exists(xlsx_file) else csv_file
         
         if not os.path.exists(transformed_file):
@@ -249,8 +249,8 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
     if save_file:
         # Archive existing files before saving new one
         today = datetime.now().strftime('%Y-%m-%d')
-        output_file = f'../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{today}.xlsx'
-        archive_folder = f'../../data/transformed_supervision_weekly/archived'
+        output_file = f'../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{today}.xlsx'
+        archive_folder = f'../../data/transformed_supervision_daily/archived'
         
         # Ensure directories exist
         os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -478,13 +478,13 @@ def main():
     """CLI entry point for merge_data.py"""
     parser = argparse.ArgumentParser(description='Merge transformed and BACB supervision data')
     parser.add_argument('--transformed-input', type=str,
-                       default='../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{date}.csv',
+                       default='../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{date}.csv',
                        help='Input CSV file path for transformed data (use {date} placeholder)')
     parser.add_argument('--bacb-input', type=str,
                        default='../../data/raw_pulls/bacb_supervision_hours_{date}.csv',
                        help='Input CSV file path for BACB data (use {date} placeholder)')
     parser.add_argument('--output', type=str,
-                       default='../../data/transformed_supervision_weekly/weekly_supervision_hours_transformed_{date}.xlsx',
+                       default='../../data/transformed_supervision_daily/daily_supervision_hours_transformed_{date}.xlsx',
                        help='Output Excel file path (use {date} placeholder)')
     
     args = parser.parse_args()
