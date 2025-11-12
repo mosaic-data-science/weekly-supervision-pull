@@ -8,11 +8,11 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/davidjcox/Downloads/Mosaic/weekly-supervision-pull/scripts_notebooks/prod/run_pipeline_wrapper.sh</string>
+        <string>/Users/davidjcox/Downloads/Mosaic/daily-supervision-pull/scripts_notebooks/prod/run_pipeline_wrapper.sh</string>
     </array>
     
     <key>WorkingDirectory</key>
-    <string>/Users/davidjcox/Downloads/Mosaic/weekly-supervision-pull</string>
+    <string>/Users/davidjcox/Downloads/Mosaic/daily-supervision-pull</string>
     
     <key>StartCalendarInterval</key>
     <dict>
@@ -23,10 +23,10 @@
     </dict>
     
     <key>StandardOutPath</key>
-    <string>/Users/davidjcox/Downloads/Mosaic/weekly-supervision-pull/scripts_notebooks/prod/logs/launchd_stdout.log</string>
+    <string>/Users/davidjcox/Downloads/Mosaic/daily-supervision-pull/scripts_notebooks/prod/logs/launchd_stdout.log</string>
     
     <key>StandardErrorPath</key>
-    <string>/Users/davidjcox/Downloads/Mosaic/weekly-supervision-pull/scripts_notebooks/prod/logs/launchd_stderr.log</string>
+    <string>/Users/davidjcox/Downloads/Mosaic/daily-supervision-pull/scripts_notebooks/prod/logs/launchd_stderr.log</string>
     
     <key>RunAtLoad</key>
     <false/>
