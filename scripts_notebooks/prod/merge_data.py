@@ -167,19 +167,25 @@ def merge_data(transformed_df: pd.DataFrame, bacb_df: pd.DataFrame, logger: logg
     
     # Calculate percentage of direct hours supervised using TotalSupervisionHours
     if 'TotalSupervisionHours' in merged_df.columns and 'DirectHours' in merged_df.columns:
-        merged_df['PctOfDirectHoursSupervised'] = round(
+        merged_df['TotalSupervisionPercent'] = round(
             100 * (merged_df['TotalSupervisionHours'] / merged_df['DirectHours'].replace(0, pd.NA)), 2
         )
-        logger.info("Added PctOfDirectHoursSupervised column (100 * TotalSupervisionHours / DirectHours)")
+        logger.info("Added TotalSupervisionPercent column (100 * TotalSupervisionHours / DirectHours)")
     
-    # Reorder columns to include BACB data
+    # Reorder columns to include BACB data - TotalSupervisionPercent should be last
     column_order = [
         'Clinic', 'DirectProviderId', 'DirectProviderName', 
-        'DirectHours', 'SupervisionHours', 'PctOfDirectHoursSupervised',
+        'DirectHours', 'SupervisionHours',
         'BACBSupervisionCodesOccurred', 'BACBSupervisionHours', 'TotalSupervisionHours'
     ]
-    # Only include columns that exist
+    # Only include columns that exist in the order list
     column_order = [col for col in column_order if col in merged_df.columns]
+    # Add any remaining columns (except TotalSupervisionPercent which goes last)
+    remaining_cols = [col for col in merged_df.columns if col not in column_order and col != 'TotalSupervisionPercent']
+    column_order.extend(remaining_cols)
+    # Ensure TotalSupervisionPercent is always last if it exists
+    if 'TotalSupervisionPercent' in merged_df.columns:
+        column_order.append('TotalSupervisionPercent')
     merged_df = merged_df[column_order]
     
     logger.info(f"Data merge completed. Final dataset has {len(merged_df)} rows with BACB columns.")
@@ -284,10 +290,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                 for clinic in sorted(clinics):
                     clinic_data = final_df[final_df['Clinic'] == clinic].copy()
                     
-                    # Sort by PctOfDirectHoursSupervised (lowest values first)
-                    if 'PctOfDirectHoursSupervised' in clinic_data.columns:
-                        clinic_data = clinic_data.sort_values('PctOfDirectHoursSupervised', ascending=True, na_position='last')
-                        logger.info(f"  - Sorted {len(clinic_data)} rows by PctOfDirectHoursSupervised (ascending)")
+                    # Sort by TotalSupervisionPercent (lowest values first)
+                    if 'TotalSupervisionPercent' in clinic_data.columns:
+                        clinic_data = clinic_data.sort_values('TotalSupervisionPercent', ascending=True, na_position='last')
+                        logger.info(f"  - Sorted {len(clinic_data)} rows by TotalSupervisionPercent (ascending)")
                     
                     # Excel sheet names must be <= 31 characters and can't contain certain characters
                     sheet_name = str(clinic)[:31].replace('/', '_').replace('\\', '_').replace('?', '_').replace('*', '_').replace('[', '_').replace(']', '_').replace(':', '_')
@@ -301,11 +307,11 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]
                 
-                # Find the column index for PctOfDirectHoursSupervised
+                # Find the column index for TotalSupervisionPercent
                 header_row = 1
                 pct_col_idx = None
                 for cell in ws[header_row]:
-                    if cell.value == 'PctOfDirectHoursSupervised':
+                    if cell.value == 'TotalSupervisionPercent':
                         pct_col_idx = cell.column_letter
                         break
                 
@@ -380,10 +386,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             # Fallback: save as single sheet if Clinic column doesn't exist
             logger.warning("'Clinic' column not found, saving as single sheet")
             
-            # Sort by PctOfDirectHoursSupervised (lowest values first)
-            if 'PctOfDirectHoursSupervised' in final_df.columns:
-                final_df = final_df.sort_values('PctOfDirectHoursSupervised', ascending=True, na_position='last')
-                logger.info(f"Sorted {len(final_df)} rows by PctOfDirectHoursSupervised (ascending)")
+            # Sort by TotalSupervisionPercent (lowest values first)
+            if 'TotalSupervisionPercent' in final_df.columns:
+                final_df = final_df.sort_values('TotalSupervisionPercent', ascending=True, na_position='last')
+                logger.info(f"Sorted {len(final_df)} rows by TotalSupervisionPercent (ascending)")
             
             final_df.to_excel(output_file, index=False, engine='openpyxl')
             
@@ -392,11 +398,11 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             wb = load_workbook(output_file)
             ws = wb.active
             
-            # Find the column index for PctOfDirectHoursSupervised
+            # Find the column index for TotalSupervisionPercent
             header_row = 1
             pct_col_idx = None
             for cell in ws[header_row]:
-                if cell.value == 'PctOfDirectHoursSupervised':
+                if cell.value == 'TotalSupervisionPercent':
                     pct_col_idx = cell.column_letter
                     break
             
