@@ -15,6 +15,7 @@ import sys
 import os
 import logging
 import argparse
+import subprocess
 from datetime import datetime, timedelta
 from pull_data import pull_data_main
 from transform_data import transform_data_main
@@ -38,6 +39,8 @@ def setup_logging(log_dir: str = 'logs') -> logging.Logger:
         ]
     )
     return logging.getLogger(__name__)
+
+
 
 
 def get_latest_date_from_files(raw_folder: str = '../../data/raw_pulls') -> str:
@@ -146,7 +149,7 @@ def main():
         logger.info(f"Columns: {', '.join(final_df.columns.tolist())}")
         logger.info("="*70)
         
-        return 0
+        exit_code = 0
         
     except Exception as e:
         logger.error("="*70)
@@ -155,7 +158,31 @@ def main():
         logger.error(f"Error: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return 1
+        exit_code = 1
+    
+    finally:
+        # Send email notification regardless of success or failure
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            email_script = os.path.join(script_dir, 'send_email.py')
+            logger.info(f"Sending email notification (exit_code: {exit_code})...")
+            result = subprocess.run(
+                [sys.executable, email_script, str(exit_code)],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode == 0:
+                logger.info("Email notification sent successfully")
+            else:
+                logger.warning(f"Email script returned error: {result.stderr}")
+        except subprocess.TimeoutExpired:
+            logger.warning("Email notification timed out")
+        except Exception as email_error:
+            logger.warning(f"Failed to send email notification: {email_error}")
+            # Don't fail the pipeline if email fails
+    
+    return exit_code
 
 
 if __name__ == "__main__":
