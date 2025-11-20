@@ -290,12 +290,20 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
         
         # Group data by Clinic and save as Excel with separate sheets
         if 'Clinic' in final_df.columns:
-            clinics = final_df['Clinic'].unique()
-            logger.info(f"Saving Excel file with {len(clinics)} clinic sheets: {', '.join(clinics)}")
+            # Get unique clinics that actually have data
+            # Filter to only clinics that have at least one row
+            clinics_with_data = final_df.groupby('Clinic').size()
+            clinics = clinics_with_data[clinics_with_data > 0].index.tolist()
+            logger.info(f"Saving Excel file with {len(clinics)} clinic sheets (clinics with data)")
             
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                 for clinic in sorted(clinics):
                     clinic_data = final_df[final_df['Clinic'] == clinic].copy()
+                    
+                    # This should always have data since we filtered above, but double-check
+                    if len(clinic_data) == 0:
+                        logger.warning(f"  - Skipping sheet for '{clinic}' (no data found)")
+                        continue
                     
                     # Sort by TotalSupervisionPercent (lowest values first)
                     if 'TotalSupervisionPercent' in clinic_data.columns:
@@ -303,6 +311,7 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                         logger.info(f"  - Sorted {len(clinic_data)} rows by TotalSupervisionPercent (ascending)")
                     
                     # Excel sheet names must be <= 31 characters and can't contain certain characters
+                    # Clean the clinic name for the sheet name
                     sheet_name = str(clinic)[:31].replace('/', '_').replace('\\', '_').replace('?', '_').replace('*', '_').replace('[', '_').replace(']', '_').replace(':', '_')
                     clinic_data.to_excel(writer, sheet_name=sheet_name, index=False)
                     logger.info(f"  - Saved {len(clinic_data)} rows to sheet '{sheet_name}'")
@@ -325,31 +334,35 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                 if pct_col_idx:
                     # Get the last row with data
                     max_row = ws.max_row
-                    data_range = f'{pct_col_idx}2:{pct_col_idx}{max_row}'
-                    
-                    # Add conditional formatting with discrete ranges:
-                    # 0-5% = Red background (inclusive)
-                    # >5% and <10% = Yellow background
-                    # >=10% = Green background
-                    
-                    # Red background for <= 5%
-                    red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
-                    red_rule = CellIsRule(operator='lessThanOrEqual', formula=[5.0], fill=red_fill)
-                    ws.conditional_formatting.add(data_range, red_rule)
-                    
-                    # Yellow background for > 5% and < 10% (using formula for proper AND logic)
-                    yellow_fill = PatternFill(start_color='FFD93D', end_color='FFD93D', fill_type='solid')
-                    # Use FormulaRule with relative reference - Excel will adjust for each cell
-                    yellow_formula = f'AND({pct_col_idx}2>5, {pct_col_idx}2<10)'
-                    yellow_rule = FormulaRule(formula=[yellow_formula], fill=yellow_fill)
-                    ws.conditional_formatting.add(data_range, yellow_rule)
-                    
-                    # Green background for >= 10%
-                    green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
-                    green_rule = CellIsRule(operator='greaterThanOrEqual', formula=[10.0], fill=green_fill)
-                    ws.conditional_formatting.add(data_range, green_rule)
-                    
-                    logger.info(f"  - Added conditional formatting to column {pct_col_idx} in sheet '{sheet_name}' (0-5% red, >5-<10% yellow, >=10% green)")
+                    # Skip conditional formatting if there are no data rows (only header)
+                    if max_row <= 1:
+                        logger.info(f"  - Skipping conditional formatting for sheet '{sheet_name}' (no data rows)")
+                    else:
+                        data_range = f'{pct_col_idx}2:{pct_col_idx}{max_row}'
+                        
+                        # Add conditional formatting with discrete ranges:
+                        # 0-5% = Red background (inclusive)
+                        # >5% and <10% = Yellow background
+                        # >=10% = Green background
+                        
+                        # Red background for <= 5%
+                        red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                        red_rule = CellIsRule(operator='lessThanOrEqual', formula=[5.0], fill=red_fill)
+                        ws.conditional_formatting.add(data_range, red_rule)
+                        
+                        # Yellow background for > 5% and < 10% (using formula for proper AND logic)
+                        yellow_fill = PatternFill(start_color='FFD93D', end_color='FFD93D', fill_type='solid')
+                        # Use FormulaRule with relative reference - Excel will adjust for each cell
+                        yellow_formula = f'AND({pct_col_idx}2>5, {pct_col_idx}2<10)'
+                        yellow_rule = FormulaRule(formula=[yellow_formula], fill=yellow_fill)
+                        ws.conditional_formatting.add(data_range, yellow_rule)
+                        
+                        # Green background for >= 10%
+                        green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                        green_rule = CellIsRule(operator='greaterThanOrEqual', formula=[10.0], fill=green_fill)
+                        ws.conditional_formatting.add(data_range, green_rule)
+                        
+                        logger.info(f"  - Added conditional formatting to column {pct_col_idx} in sheet '{sheet_name}' (0-5% red, >5-<10% yellow, >=10% green)")
                 
                 # Find the column index for BACBSupervisionCodesOccurred and add conditional formatting
                 bacb_col_idx = None
@@ -360,21 +373,25 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                 
                 if bacb_col_idx:
                     max_row = ws.max_row
-                    bacb_data_range = f'{bacb_col_idx}2:{bacb_col_idx}{max_row}'
-                    
-                    # Red background for "No"
-                    red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
-                    red_formula = f'{bacb_col_idx}2="No"'
-                    red_rule = FormulaRule(formula=[red_formula], fill=red_fill)
-                    ws.conditional_formatting.add(bacb_data_range, red_rule)
-                    
-                    # Green background for "Yes"
-                    green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
-                    green_formula = f'{bacb_col_idx}2="Yes"'
-                    green_rule = FormulaRule(formula=[green_formula], fill=green_fill)
-                    ws.conditional_formatting.add(bacb_data_range, green_rule)
-                    
-                    logger.info(f"  - Added conditional formatting to column {bacb_col_idx} in sheet '{sheet_name}' (No=red, Yes=green)")
+                    # Skip conditional formatting if there are no data rows (only header)
+                    if max_row <= 1:
+                        logger.info(f"  - Skipping BACB conditional formatting for sheet '{sheet_name}' (no data rows)")
+                    else:
+                        bacb_data_range = f'{bacb_col_idx}2:{bacb_col_idx}{max_row}'
+                        
+                        # Red background for "No"
+                        red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                        red_formula = f'{bacb_col_idx}2="No"'
+                        red_rule = FormulaRule(formula=[red_formula], fill=red_fill)
+                        ws.conditional_formatting.add(bacb_data_range, red_rule)
+                        
+                        # Green background for "Yes"
+                        green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                        green_formula = f'{bacb_col_idx}2="Yes"'
+                        green_rule = FormulaRule(formula=[green_formula], fill=green_fill)
+                        ws.conditional_formatting.add(bacb_data_range, green_rule)
+                        
+                        logger.info(f"  - Added conditional formatting to column {bacb_col_idx} in sheet '{sheet_name}' (No=red, Yes=green)")
                 
                 # Adjust column widths to fit content
                 logger.info(f"  - Adjusting column widths for sheet '{sheet_name}'...")
@@ -415,31 +432,35 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             
             if pct_col_idx:
                 max_row = ws.max_row
-                data_range = f'{pct_col_idx}2:{pct_col_idx}{max_row}'
-                
-                # Add conditional formatting with discrete ranges:
-                # 0-5% = Red background (inclusive)
-                # >5% and <10% = Yellow background
-                # >=10% = Green background
-                
-                # Red background for <= 5%
-                red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
-                red_rule = CellIsRule(operator='lessThanOrEqual', formula=[5.0], fill=red_fill)
-                ws.conditional_formatting.add(data_range, red_rule)
-                
-                # Yellow background for > 5% and < 10% (using formula for proper AND logic)
-                yellow_fill = PatternFill(start_color='FFD93D', end_color='FFD93D', fill_type='solid')
-                # Use FormulaRule with relative reference - Excel will adjust for each cell
-                yellow_formula = f'AND({pct_col_idx}2>5, {pct_col_idx}2<10)'
-                yellow_rule = FormulaRule(formula=[yellow_formula], fill=yellow_fill)
-                ws.conditional_formatting.add(data_range, yellow_rule)
-                
-                # Green background for >= 10%
-                green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
-                green_rule = CellIsRule(operator='greaterThanOrEqual', formula=[10.0], fill=green_fill)
-                ws.conditional_formatting.add(data_range, green_rule)
-                
-                logger.info(f"Added conditional formatting to column {pct_col_idx} (0-5% red, >5-<10% yellow, >=10% green)")
+                # Skip conditional formatting if there are no data rows (only header)
+                if max_row <= 1:
+                    logger.info("Skipping conditional formatting (no data rows)")
+                else:
+                    data_range = f'{pct_col_idx}2:{pct_col_idx}{max_row}'
+                    
+                    # Add conditional formatting with discrete ranges:
+                    # 0-5% = Red background (inclusive)
+                    # >5% and <10% = Yellow background
+                    # >=10% = Green background
+                    
+                    # Red background for <= 5%
+                    red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                    red_rule = CellIsRule(operator='lessThanOrEqual', formula=[5.0], fill=red_fill)
+                    ws.conditional_formatting.add(data_range, red_rule)
+                    
+                    # Yellow background for > 5% and < 10% (using formula for proper AND logic)
+                    yellow_fill = PatternFill(start_color='FFD93D', end_color='FFD93D', fill_type='solid')
+                    # Use FormulaRule with relative reference - Excel will adjust for each cell
+                    yellow_formula = f'AND({pct_col_idx}2>5, {pct_col_idx}2<10)'
+                    yellow_rule = FormulaRule(formula=[yellow_formula], fill=yellow_fill)
+                    ws.conditional_formatting.add(data_range, yellow_rule)
+                    
+                    # Green background for >= 10%
+                    green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                    green_rule = CellIsRule(operator='greaterThanOrEqual', formula=[10.0], fill=green_fill)
+                    ws.conditional_formatting.add(data_range, green_rule)
+                    
+                    logger.info(f"Added conditional formatting to column {pct_col_idx} (0-5% red, >5-<10% yellow, >=10% green)")
             
             # Find the column index for BACBSupervisionCodesOccurred and add conditional formatting
             bacb_col_idx = None
@@ -450,21 +471,25 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             
             if bacb_col_idx:
                 max_row = ws.max_row
-                bacb_data_range = f'{bacb_col_idx}2:{bacb_col_idx}{max_row}'
-                
-                # Red background for "No"
-                red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
-                red_formula = f'{bacb_col_idx}2="No"'
-                red_rule = FormulaRule(formula=[red_formula], fill=red_fill)
-                ws.conditional_formatting.add(bacb_data_range, red_rule)
-                
-                # Green background for "Yes"
-                green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
-                green_formula = f'{bacb_col_idx}2="Yes"'
-                green_rule = FormulaRule(formula=[green_formula], fill=green_fill)
-                ws.conditional_formatting.add(bacb_data_range, green_rule)
-                
-                logger.info(f"Added conditional formatting to column {bacb_col_idx} (No=red, Yes=green)")
+                # Skip conditional formatting if there are no data rows (only header)
+                if max_row <= 1:
+                    logger.info("Skipping BACB conditional formatting (no data rows)")
+                else:
+                    bacb_data_range = f'{bacb_col_idx}2:{bacb_col_idx}{max_row}'
+                    
+                    # Red background for "No"
+                    red_fill = PatternFill(start_color='FF6B6B', end_color='FF6B6B', fill_type='solid')
+                    red_formula = f'{bacb_col_idx}2="No"'
+                    red_rule = FormulaRule(formula=[red_formula], fill=red_fill)
+                    ws.conditional_formatting.add(bacb_data_range, red_rule)
+                    
+                    # Green background for "Yes"
+                    green_fill = PatternFill(start_color='6BCF7F', end_color='6BCF7F', fill_type='solid')
+                    green_formula = f'{bacb_col_idx}2="Yes"'
+                    green_rule = FormulaRule(formula=[green_formula], fill=green_fill)
+                    ws.conditional_formatting.add(bacb_data_range, green_rule)
+                    
+                    logger.info(f"Added conditional formatting to column {bacb_col_idx} (No=red, Yes=green)")
             
             # Adjust column widths to fit content
             logger.info("Adjusting column widths...")
