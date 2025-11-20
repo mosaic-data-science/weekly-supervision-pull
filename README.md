@@ -21,6 +21,8 @@ weekly-supervision-pull/
 ├── README.md                           # This file
 ├── requirements.txt                     # Python dependencies
 ├── .gitignore                          # Git ignore rules
+├── docs/                               # Documentation
+│   └── DATA_CONTRACT.md                # Data contract and SLA
 ├── credentials/                        # Authentication files (ignored by git)
 │   ├── client_secret.json              # Google OAuth credentials
 │   ├── service-account-key.json        # Service account key
@@ -310,6 +312,19 @@ The pipeline is configured to run automatically using launchd:
 - **Environment files** not committed
 - **Log files** contain no sensitive data
 - **Data files** stored locally and in secure cloud storage
+
+## Data Contract & SLA
+
+For detailed information about data availability, quality standards, performance SLAs, and operational expectations, see the **[Data Contract / SLA documentation](docs/DATA_CONTRACT.md)**.
+
+The data contract covers:
+- Data availability and freshness guarantees
+- Schema and data structure specifications
+- Data quality standards
+- Performance SLAs
+- Error handling and notifications
+- Data retention policies
+- Support and maintenance windows
 
 ## Support
 

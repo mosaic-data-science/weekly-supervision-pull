@@ -21,8 +21,15 @@ from dotenv import load_dotenv
 from sql_queries import SUPERVISION_HOURS_SQL_TEMPLATE, BACB_SUPERVISION_TEMPLATE
 
 
-def setup_logging(log_dir: str = 'logs') -> logging.Logger:
+def setup_logging(log_dir: str = None) -> logging.Logger:
     """Set up logging configuration."""
+    # Use root logs directory if not specified
+    if log_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Go up from scripts_notebooks/prod to project root
+        project_root = os.path.dirname(os.path.dirname(script_dir))
+        log_dir = os.path.join(project_root, 'logs')
+    
     # Ensure logs directory exists
     os.makedirs(log_dir, exist_ok=True)
     
