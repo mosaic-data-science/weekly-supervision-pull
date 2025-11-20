@@ -1,22 +1,22 @@
 #!/bin/bash
 # Wrapper script for run_pipeline.py to be used with launchd
+# Launchd handles the scheduling, so we just run the pipeline
 
-# Check if current time in ET is 7:30 AM (within 1 minute window)
-# This ensures the script only runs at 7:30 AM ET regardless of system timezone
-ET_TIME=$(TZ="America/New_York" date +"%H:%M")
-ET_HOUR=$(TZ="America/New_York" date +"%H")
-ET_MINUTE=$(TZ="America/New_York" date +"%M")
+# Redirect all output to log files for debugging
+exec >> /Users/davidjcox/Documents/Mosaic/daily-supervision-pull/logs/launchd_stdout.log 2>> /Users/davidjcox/Documents/Mosaic/daily-supervision-pull/logs/launchd_stderr.log
 
-if [ "$ET_HOUR" != "07" ] || [ "$ET_MINUTE" != "30" ]; then
-    echo "Current ET time is $ET_TIME, not 7:30 AM. Exiting."
-    exit 0
-fi
-
-echo "Running at 7:30 AM ET ($ET_TIME)"
+echo "=========================================="
+echo "Pipeline wrapper started at $(TZ="America/New_York" date)"
+echo "Current directory: $(pwd)"
+echo "Script path: $0"
+echo "=========================================="
 
 # Set the project directory
-PROJECT_DIR="/Users/davidjcox/Downloads/Mosaic/daily-supervision-pull"
-cd "$PROJECT_DIR" || exit 1
+PROJECT_DIR="/Users/davidjcox/Documents/Mosaic/daily-supervision-pull"
+cd "$PROJECT_DIR" || {
+    echo "ERROR: Failed to change to project directory: $PROJECT_DIR"
+    exit 1
+}
 
 # Activate virtual environment and run the pipeline
 source venv/bin/activate
@@ -25,6 +25,7 @@ source venv/bin/activate
 PYTHON_VENV="$PROJECT_DIR/venv/bin/python3"
 
 # Run the pipeline
+echo "Running pipeline..."
 $PYTHON_VENV "$PROJECT_DIR/scripts_notebooks/prod/run_pipeline.py"
 
 # Capture exit code
@@ -39,5 +40,8 @@ $PYTHON_VENV "$PROJECT_DIR/scripts_notebooks/prod/send_email.py" $EXIT_CODE || e
 # Deactivate virtual environment
 deactivate
 
-exit $EXIT_CODE
+echo "=========================================="
+echo "Pipeline wrapper finished at $(TZ="America/New_York" date)"
+echo "=========================================="
 
+exit $EXIT_CODE

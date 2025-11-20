@@ -16,8 +16,15 @@ import argparse
 from datetime import datetime
 
 
-def setup_logging(log_dir: str = 'logs') -> logging.Logger:
+def setup_logging(log_dir: str = None) -> logging.Logger:
     """Set up logging configuration."""
+    # Use root logs directory if not specified
+    if log_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Go up from scripts_notebooks/prod to project root
+        project_root = os.path.dirname(os.path.dirname(script_dir))
+        log_dir = os.path.join(project_root, 'logs')
+    
     # Ensure logs directory exists
     os.makedirs(log_dir, exist_ok=True)
     
@@ -81,22 +88,57 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
             direct_dict[row['DirectProviderId']] = f"{row['DirectFirstName']} {row['DirectLastName']}"
     
     # Group and aggregate data
+    # Include DirectServiceLocationName in groupby to keep it for later use
     transformed_df = df.groupby([
         'DirectProviderId',
+        'ClientOfficeLocationName',
         'DirectServiceLocationName']).agg({
         'DirectHours': 'sum',
         'SupervisionHours': 'sum'
     }).reset_index()
     
-    # Filter for ORGANIZATION locations and clean clinic names
-    transformed_df = transformed_df[transformed_df['DirectServiceLocationName'].str.contains('ORGANIZATION')].reset_index(drop=True)
-    transformed_df['Clinic'] = [val.split('ORGANIZATION: ')[1] for val in transformed_df['DirectServiceLocationName']]
-    transformed_df['Clinic'] = [val.split('Clinic')[0] for val in transformed_df['Clinic']]
-    transformed_df['Clinic'] = [val[:-1] for val in transformed_df['Clinic']]
-    transformed_df['Clinic'] = [val.replace(" 8528 Unive", "") for val in transformed_df['Clinic']]
+    # Clean clinic names from ClientOfficeLocationName
+    # Check if it contains 'ORGANIZATION' format, otherwise use as-is
+    if transformed_df['ClientOfficeLocationName'].str.contains('ORGANIZATION', na=False).any():
+        # Filter for ORGANIZATION locations and clean clinic names
+        transformed_df = transformed_df[transformed_df['ClientOfficeLocationName'].str.contains('ORGANIZATION', na=False)].reset_index(drop=True)
+        
+        # Handle both "ORGANIZATION: " and "ORGANIZATION_" formats
+        def extract_clinic_name(val):
+            val_str = str(val)
+            # Try "ORGANIZATION: " first (colon and space)
+            if 'ORGANIZATION: ' in val_str:
+                return val_str.split('ORGANIZATION: ')[1]
+            # Then try "ORGANIZATION_" (underscore)
+            elif 'ORGANIZATION_' in val_str:
+                return val_str.split('ORGANIZATION_')[1]
+            # Fallback to original value
+            else:
+                return val_str
+        
+        transformed_df['Clinic'] = transformed_df['ClientOfficeLocationName'].apply(extract_clinic_name)
+        # Strip leading whitespace that might result from the split
+        transformed_df['Clinic'] = transformed_df['Clinic'].str.strip()
+        transformed_df['Clinic'] = [val.split('Clinic')[0] for val in transformed_df['Clinic']]
+        transformed_df['Clinic'] = [val[:-1] if val.endswith(' ') else val for val in transformed_df['Clinic']]
+        transformed_df['Clinic'] = [val.replace(" 8528 Unive", "") for val in transformed_df['Clinic']]
+    else:
+        # Use ClientOfficeLocationName directly as Clinic name
+        transformed_df['Clinic'] = transformed_df['ClientOfficeLocationName']
     
-    # Drop the original location column and add provider names
-    transformed_df.drop(columns=['DirectServiceLocationName'], inplace=True)
+    # Replace "Diagnostics" in Clinic with DirectServiceLocationName
+    # Only replace if DirectServiceLocationName is not null/empty
+    diagnostics_mask = (
+        transformed_df['Clinic'].str.contains('Diagnostics', na=False, case=False) &
+        transformed_df['DirectServiceLocationName'].notna() &
+        (transformed_df['DirectServiceLocationName'].astype(str).str.strip() != '')
+    )
+    if diagnostics_mask.any():
+        transformed_df.loc[diagnostics_mask, 'Clinic'] = transformed_df.loc[diagnostics_mask, 'DirectServiceLocationName']
+        logger.info(f"Replaced 'Diagnostics' in Clinic column with DirectServiceLocationName for {diagnostics_mask.sum()} rows")
+    
+    # Drop the original location columns and add provider names
+    transformed_df.drop(columns=['ClientOfficeLocationName', 'DirectServiceLocationName'], inplace=True)
     transformed_df['DirectProviderName'] = transformed_df['DirectProviderId'].map(direct_dict)
     
     # Reorder columns and sort

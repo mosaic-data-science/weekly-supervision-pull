@@ -17,6 +17,7 @@ WITH base AS (
         b.BillingEntryId,  -- if available
         b.ClientContactId,
         c.ClientFullName,
+        c.ClientOfficeLocationName,
         b.ProviderContactId,
         sc.ServiceCode,
         b.ServiceStartTime,
@@ -33,14 +34,14 @@ WITH base AS (
 ),
 direct AS (
     SELECT
-        ClientContactId, ClientFullName, ProviderContactId,
+        ClientContactId, ClientFullName, ClientOfficeLocationName, ProviderContactId,
         ServiceStartTime, ServiceEndTime, ServiceLocationName
     FROM base
     WHERE ServiceCode = '97153'
 ),
 supervision AS (
     SELECT
-        ClientContactId, ClientFullName, ProviderContactId,
+        ClientContactId, ClientFullName, ClientOfficeLocationName, ProviderContactId,
         ServiceStartTime, ServiceEndTime, ServiceLocationName
     FROM base
     WHERE ServiceCode IN ('97155','Non-billable: PM Admin','PDS | BCBA')
@@ -51,6 +52,7 @@ overlap_raw AS (
     SELECT
         d.ClientContactId,
         d.ClientFullName,
+        d.ClientOfficeLocationName,
         d.ProviderContactId AS DirectProviderId,
         s.ProviderContactId AS SupervisorProviderId,
         d.ServiceLocationName AS DirectServiceLocationName,
@@ -76,6 +78,7 @@ overlap AS (
     SELECT
         ClientContactId,
         ClientFullName,
+        ClientOfficeLocationName,
         DirectProviderId,
         SupervisorProviderId,
         DirectServiceLocationName,
@@ -84,21 +87,30 @@ overlap AS (
     FROM overlap_raw
     WHERE OverlapHours > 0
     GROUP BY
-        ClientContactId, ClientFullName,
+        ClientContactId, ClientFullName, ClientOfficeLocationName,
         DirectProviderId, SupervisorProviderId,
         DirectServiceLocationName, SupervisorServiceLocationName
 ),
 
 -- Total direct hours per client, direct provider, and direct location
+-- Exclude BCBAs from being direct providers
 direct_totals AS (
     SELECT
         d.ClientContactId,
         d.ClientFullName,
+        d.ClientOfficeLocationName,
         d.ProviderContactId AS DirectProviderId,
         d.ServiceLocationName AS DirectServiceLocationName,
         SUM(DATEDIFF(MINUTE, d.ServiceStartTime, d.ServiceEndTime)) / 60.0 AS DirectHours_Total
     FROM direct d
-    GROUP BY d.ClientContactId, d.ClientFullName, d.ProviderContactId, d.ServiceLocationName
+    LEFT JOIN [insights].[dw2].[Contacts] pdir
+        ON pdir.ContactId = d.ProviderContactId
+    LEFT JOIN [insights].[insights].[Employee] e
+        ON e.EmployeeFirstName = pdir.FirstName
+       AND e.EmployeeLastName = pdir.LastName
+    WHERE e.EmploymentPosition NOT IN ('BCBA', 'Board Certified Behavior Analyst')
+       OR e.EmploymentPosition IS NULL
+    GROUP BY d.ClientContactId, d.ClientFullName, d.ClientOfficeLocationName, d.ProviderContactId, d.ServiceLocationName
 ),
 
 -- Total overlap hours per client, direct provider, and direct location (across all supervisors)
@@ -117,6 +129,7 @@ direct_only AS (
     SELECT
         dt.ClientContactId,
         dt.ClientFullName,
+        dt.ClientOfficeLocationName,
         dt.DirectProviderId,
         dt.DirectServiceLocationName,
         CAST(dt.DirectHours_Total - COALESCE(od.OverlapHours_Total, 0.0) AS DECIMAL(10,2)) AS DirectHours_NoSupervision
@@ -134,11 +147,12 @@ supervision_totals AS (
     SELECT
         s.ClientContactId,
         s.ClientFullName,
+        s.ClientOfficeLocationName,
         s.ProviderContactId AS SupervisorProviderId,
         s.ServiceLocationName AS SupervisorServiceLocationName,
         SUM(DATEDIFF(MINUTE, s.ServiceStartTime, s.ServiceEndTime)) / 60.0 AS SupervisionHours_Total
     FROM supervision s
-    GROUP BY s.ClientContactId, s.ClientFullName, s.ProviderContactId, s.ServiceLocationName
+    GROUP BY s.ClientContactId, s.ClientFullName, s.ClientOfficeLocationName, s.ProviderContactId, s.ServiceLocationName
 ),
 
 -- Overlap attributed to each supervisor/location
@@ -157,6 +171,7 @@ supervision_only AS (
     SELECT
         st.ClientContactId,
         st.ClientFullName,
+        st.ClientOfficeLocationName,
         st.SupervisorProviderId,
         st.SupervisorServiceLocationName,
         CAST(st.SupervisionHours_Total - COALESCE(os.OverlapHours_Total, 0.0) AS DECIMAL(10,2)) AS SupervisionHours_NoDirect
@@ -169,10 +184,12 @@ supervision_only AS (
 ),
 
 -- Labels using your exact column layout
+-- Exclude BCBAs from being direct providers
 named_direct_only AS (
     SELECT
         do.ClientContactId,
         do.ClientFullName,
+        do.ClientOfficeLocationName,
         do.DirectProviderId,
         pdir.FirstName AS DirectFirstName,
         pdir.LastName  AS DirectLastName,
@@ -186,12 +203,18 @@ named_direct_only AS (
     FROM direct_only do
     LEFT JOIN [insights].[dw2].[Contacts] pdir
       ON pdir.ContactId = do.DirectProviderId
+    LEFT JOIN [insights].[insights].[Employee] e
+      ON e.EmployeeFirstName = pdir.FirstName
+     AND e.EmployeeLastName = pdir.LastName
+    WHERE e.EmploymentPosition NOT IN ('BCBA', 'Board Certified Behavior Analyst')
+       OR e.EmploymentPosition IS NULL
 ),
 
 named_overlap AS (
     SELECT
         o.ClientContactId,
         o.ClientFullName,
+        o.ClientOfficeLocationName,
         o.DirectProviderId,
         pdir.FirstName AS DirectFirstName,
         pdir.LastName  AS DirectLastName,
@@ -207,12 +230,18 @@ named_overlap AS (
       ON pdir.ContactId = o.DirectProviderId
     LEFT JOIN [insights].[dw2].[Contacts] psup
       ON psup.ContactId = o.SupervisorProviderId
+    LEFT JOIN [insights].[insights].[Employee] e
+      ON e.EmployeeFirstName = pdir.FirstName
+     AND e.EmployeeLastName = pdir.LastName
+    WHERE e.EmploymentPosition NOT IN ('BCBA', 'Board Certified Behavior Analyst')
+       OR e.EmploymentPosition IS NULL
 ),
 
 named_supervision_only AS (
     SELECT
         so.ClientContactId,
         so.ClientFullName,
+        so.ClientOfficeLocationName,
         NULL AS DirectProviderId,
         NULL AS DirectFirstName,
         NULL AS DirectLastName,
@@ -231,6 +260,7 @@ named_supervision_only AS (
 SELECT
     x.ClientContactId,
     x.ClientFullName,
+    x.ClientOfficeLocationName,
     x.DirectProviderId,
     x.DirectFirstName,
     x.DirectLastName,
