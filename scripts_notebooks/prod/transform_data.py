@@ -42,6 +42,41 @@ def setup_logging(log_dir: str = None) -> logging.Logger:
     return logging.getLogger(__name__)
 
 
+def clean_clinic_name(name: str) -> str:
+    """
+    Clean clinic name by removing common suffixes and prefixes.
+    
+    Args:
+        name (str): Raw clinic name
+        
+    Returns:
+        str: Cleaned clinic name
+    """
+    if pd.isna(name) or name == '':
+        return name
+    
+    name_str = str(name)
+    
+    # Remove ORGANIZATION prefix if present
+    name_str = pd.Series([name_str]).str.replace(
+        r'^ORGANIZATION[:_]\s*', '', regex=True, case=False
+    ).iloc[0]
+    
+    # Strip whitespace
+    name_str = name_str.strip()
+    
+    # Remove common suffixes (order matters - try longer matches first)
+    name_str = name_str.replace(" 8528 Unive", "")
+    name_str = name_str.replace(" 1612 Hi", "")
+    name_str = name_str.replace(" Clinic", "")
+    name_str = name_str.replace(" Clin", "")
+    
+    # Remove trailing whitespace
+    name_str = name_str.rstrip()
+    
+    return name_str
+
+
 def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
     """
     Transform the raw supervision data into the required format.
@@ -98,33 +133,22 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
     }).reset_index()
     
     # Clean clinic names from ClientOfficeLocationName
-    # Check if it contains 'ORGANIZATION' format, otherwise use as-is
-    if transformed_df['ClientOfficeLocationName'].str.contains('ORGANIZATION', na=False).any():
-        # Filter for ORGANIZATION locations and clean clinic names
-        transformed_df = transformed_df[transformed_df['ClientOfficeLocationName'].str.contains('ORGANIZATION', na=False)].reset_index(drop=True)
-        
-        # Handle both "ORGANIZATION: " and "ORGANIZATION_" formats
-        def extract_clinic_name(val):
-            val_str = str(val)
-            # Try "ORGANIZATION: " first (colon and space)
-            if 'ORGANIZATION: ' in val_str:
-                return val_str.split('ORGANIZATION: ')[1]
-            # Then try "ORGANIZATION_" (underscore)
-            elif 'ORGANIZATION_' in val_str:
-                return val_str.split('ORGANIZATION_')[1]
-            # Fallback to original value
-            else:
-                return val_str
-        
-        transformed_df['Clinic'] = transformed_df['ClientOfficeLocationName'].apply(extract_clinic_name)
-        # Strip leading whitespace that might result from the split
-        transformed_df['Clinic'] = transformed_df['Clinic'].str.strip()
-        transformed_df['Clinic'] = [val.split('Clinic')[0] for val in transformed_df['Clinic']]
-        transformed_df['Clinic'] = [val[:-1] if val.endswith(' ') else val for val in transformed_df['Clinic']]
-        transformed_df['Clinic'] = [val.replace(" 8528 Unive", "") for val in transformed_df['Clinic']]
-    else:
-        # Use ClientOfficeLocationName directly as Clinic name
-        transformed_df['Clinic'] = transformed_df['ClientOfficeLocationName']
+    # Apply consistent cleaning to ALL clinic names regardless of format
+    transformed_df['Clinic'] = transformed_df['ClientOfficeLocationName'].apply(clean_clinic_name)
+    
+    # Clean DirectServiceLocationName the same way
+    # Only process non-null values
+    mask = transformed_df['DirectServiceLocationName'].notna()
+    if mask.any():
+        transformed_df.loc[mask, 'DirectServiceLocationName'] = (
+            transformed_df.loc[mask, 'DirectServiceLocationName']
+            .apply(clean_clinic_name)
+        )
+        # Convert empty strings back to NaN
+        transformed_df.loc[mask, 'DirectServiceLocationName'] = (
+            transformed_df.loc[mask, 'DirectServiceLocationName']
+            .replace(['', 'nan'], pd.NA)
+        )
     
     # Replace "Diagnostics" in Clinic with DirectServiceLocationName
     # Only replace if DirectServiceLocationName is not null/empty
