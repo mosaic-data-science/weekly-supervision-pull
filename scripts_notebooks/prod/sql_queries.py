@@ -94,6 +94,7 @@ overlap AS (
 
 -- Total direct hours per client, direct provider, and direct location
 -- Exclude BCBAs from being direct providers
+-- Use DISTINCT to handle potential duplicates from Employee table JOIN
 direct_totals AS (
     SELECT
         d.ClientContactId,
@@ -102,7 +103,12 @@ direct_totals AS (
         d.ProviderContactId AS DirectProviderId,
         d.ServiceLocationName AS DirectServiceLocationName,
         SUM(DATEDIFF(MINUTE, d.ServiceStartTime, d.ServiceEndTime)) / 60.0 AS DirectHours_Total
-    FROM direct d
+    FROM (
+        SELECT DISTINCT
+            ClientContactId, ClientFullName, ClientOfficeLocationName, ProviderContactId,
+            ServiceStartTime, ServiceEndTime, ServiceLocationName
+        FROM direct
+    ) d
     LEFT JOIN [insights].[dw2].[Contacts] pdir
         ON pdir.ContactId = d.ProviderContactId
     LEFT JOIN [insights].[insights].[Employee] e
@@ -185,8 +191,9 @@ supervision_only AS (
 
 -- Labels using your exact column layout
 -- Exclude BCBAs from being direct providers
+-- Use DISTINCT to handle potential duplicates from Employee table JOIN
 named_direct_only AS (
-    SELECT
+    SELECT DISTINCT
         do.ClientContactId,
         do.ClientFullName,
         do.ClientOfficeLocationName,
@@ -211,7 +218,7 @@ named_direct_only AS (
 ),
 
 named_overlap AS (
-    SELECT
+    SELECT DISTINCT
         o.ClientContactId,
         o.ClientFullName,
         o.ClientOfficeLocationName,

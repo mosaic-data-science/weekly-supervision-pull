@@ -93,6 +93,42 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
     logger.info("Phase 2: Data Transformation")
     logger.info("="*50)
     
+    # Remove exact duplicate rows from SQL query output
+    initial_row_count = len(df)
+    df = df.drop_duplicates().reset_index(drop=True)
+    duplicate_count = initial_row_count - len(df)
+    if duplicate_count > 0:
+        logger.warning(f"Removed {duplicate_count} exact duplicate rows from SQL query output")
+    logger.info(f"Processing {len(df)} unique rows")
+    
+    # Additional deduplication: The SQL query may create duplicates due to Employee table joins
+    # Group by key identifying columns to ensure each unique time period is only counted once
+    # This handles cases where the same billing entry appears multiple times due to JOINs
+    if 'ClientContactId' in df.columns and 'DirectProviderId' in df.columns:
+        # For rows with DirectProviderId, group by client, provider, and hours to deduplicate
+        # This ensures we don't count the same hours multiple times
+        direct_rows = df[df['DirectProviderId'].notna()].copy()
+        if len(direct_rows) > 0:
+            # Group by the key columns that identify a unique time period
+            # Use the minimum of other columns to pick one representative row
+            key_cols = ['ClientContactId', 'DirectProviderId', 'ClientOfficeLocationName', 
+                       'DirectHours', 'SupervisionHours', 'RowType', 'DirectServiceLocationName']
+            # Only include columns that exist
+            key_cols = [col for col in key_cols if col in direct_rows.columns]
+            
+            # Group and take first row (since hours should be the same for duplicates)
+            direct_deduped = direct_rows.groupby(key_cols, dropna=False).first().reset_index()
+            
+            # Count how many duplicates were removed
+            direct_dupes = len(direct_rows) - len(direct_deduped)
+            if direct_dupes > 0:
+                logger.warning(f"Removed {direct_dupes} additional duplicate rows from direct provider data (likely due to Employee table JOIN)")
+            
+            # Combine with rows that don't have DirectProviderId
+            other_rows = df[df['DirectProviderId'].isna()].copy()
+            df = pd.concat([direct_deduped, other_rows], ignore_index=True)
+            logger.info(f"After deduplication: {len(df)} rows remaining")
+    
     # Identify all supervisors (people who appear in Supervisor columns)
     supervisors = set()
     for _, row in df.iterrows():
@@ -122,15 +158,101 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
         if pd.notna(row['DirectFirstName']) and pd.notna(row['DirectLastName']):
             direct_dict[row['DirectProviderId']] = f"{row['DirectFirstName']} {row['DirectLastName']}"
     
-    # Group and aggregate data
-    # Include DirectServiceLocationName in groupby to keep it for later use
-    transformed_df = df.groupby([
-        'DirectProviderId',
-        'ClientOfficeLocationName',
-        'DirectServiceLocationName']).agg({
-        'DirectHours': 'sum',
-        'SupervisionHours': 'sum'
-    }).reset_index()
+    # Handle overlap rows separately to avoid double-counting DirectHours
+    # When the same direct hours overlap with multiple supervisors, we get multiple rows
+    # with the same DirectHours value. We need to deduplicate these before summing.
+    if 'RowType' in df.columns:
+        # Separate rows by type
+        overlap_mask = df['RowType'] == 'Direct overlapped with supervision'
+        direct_only_mask = df['RowType'] == 'Direct (no supervision overlap)'
+        supervision_only_mask = df['RowType'] == 'Supervision without direct overlap'
+        
+        # Process overlap rows: deduplicate by client first (one row per client, not per supervisor)
+        if overlap_mask.any():
+            overlap_df = df[overlap_mask].copy()
+            logger.info(f"Processing {len(overlap_df)} overlap rows")
+            
+            # Group by client/provider/clinic/service location and take MAX DirectHours
+            # The SQL groups by DirectServiceLocationName, so we need to include it to properly deduplicate
+            # But we also need ClientContactId to deduplicate across multiple supervisors for same client
+            overlap_deduped = overlap_df.groupby([
+                'DirectProviderId',
+                'ClientOfficeLocationName',
+                'ClientContactId',  # Critical: group by client to deduplicate across supervisors
+                'DirectServiceLocationName'  # Also group by service location since SQL groups by it
+            ]).agg({
+                'DirectHours': 'max',  # All rows for same client/service location have same DirectHours
+                'SupervisionHours': 'sum',  # Sum across supervisors for same client/service location
+            }).reset_index()
+            
+            logger.info(f"After deduplication by client: {len(overlap_deduped)} overlap rows")
+            
+            # Now aggregate across clients (safe to sum now)
+            overlap_final = overlap_deduped.groupby([
+                'DirectProviderId',
+                'ClientOfficeLocationName'
+            ]).agg({
+                'DirectHours': 'sum',  # Sum across different clients
+                'SupervisionHours': 'sum',
+                'DirectServiceLocationName': 'first'
+            }).reset_index()
+        
+        # Process direct-only rows (no overlap with supervision)
+        if direct_only_mask.any():
+            direct_only_df = df[direct_only_mask].copy()
+            logger.info(f"Processing {len(direct_only_df)} direct-only rows")
+            direct_only_grouped = direct_only_df.groupby([
+                'DirectProviderId',
+                'ClientOfficeLocationName'
+            ]).agg({
+                'DirectHours': 'sum',
+                'SupervisionHours': 'sum',
+                'DirectServiceLocationName': 'first'
+            }).reset_index()
+        else:
+            direct_only_grouped = pd.DataFrame(columns=['DirectProviderId', 'ClientOfficeLocationName', 'DirectHours', 'SupervisionHours', 'DirectServiceLocationName'])
+        
+        # Process supervision-only rows (no direct overlap)
+        if supervision_only_mask.any():
+            supervision_only_df = df[supervision_only_mask].copy()
+            logger.info(f"Processing {len(supervision_only_df)} supervision-only rows")
+            # These have DirectProviderId = NULL, so we skip them for direct provider aggregation
+            # They'll be handled separately if needed
+        else:
+            supervision_only_df = pd.DataFrame()
+        
+        # Combine overlap and direct-only rows (these are the ones with DirectProviderId)
+        if overlap_mask.any() and direct_only_mask.any():
+            combined = pd.concat([overlap_final, direct_only_grouped], ignore_index=True)
+        elif overlap_mask.any():
+            combined = overlap_final
+        elif direct_only_mask.any():
+            combined = direct_only_grouped
+        else:
+            combined = pd.DataFrame(columns=['DirectProviderId', 'ClientOfficeLocationName', 'DirectHours', 'SupervisionHours', 'DirectServiceLocationName'])
+        
+        # Final aggregation to combine any remaining duplicates (shouldn't be any, but just in case)
+        if len(combined) > 0:
+            transformed_df = combined.groupby([
+                'DirectProviderId',
+                'ClientOfficeLocationName'
+            ]).agg({
+                'DirectHours': 'sum',
+                'SupervisionHours': 'sum',
+                'DirectServiceLocationName': 'first'
+            }).reset_index()
+        else:
+            transformed_df = pd.DataFrame(columns=['DirectProviderId', 'ClientOfficeLocationName', 'DirectHours', 'SupervisionHours', 'DirectServiceLocationName'])
+    else:
+        # RowType column not available, use normal grouping (fallback)
+        logger.warning("RowType column not found, using standard aggregation (may double-count overlap hours)")
+        transformed_df = df.groupby([
+            'DirectProviderId',
+            'ClientOfficeLocationName']).agg({
+            'DirectHours': 'sum',
+            'SupervisionHours': 'sum',
+            'DirectServiceLocationName': 'first'
+        }).reset_index()
     
     # Clean clinic names from ClientOfficeLocationName
     # Apply consistent cleaning to ALL clinic names regardless of format
@@ -173,6 +295,15 @@ def transform_data(df: pd.DataFrame, logger: logging.Logger) -> pd.DataFrame:
     transformed_df = transformed_df.sort_values(by=['Clinic', 'DirectProviderName'], ascending=True)
     
     logger.info(f"Data transformation completed. {len(transformed_df)} rows in transformed dataset.")
+    
+    # Diagnostic: Check for any provider with unusually high DirectHours
+    if len(transformed_df) > 0 and 'DirectHours' in transformed_df.columns:
+        high_hours = transformed_df[transformed_df['DirectHours'] > 200]
+        if len(high_hours) > 0:
+            logger.warning(f"Found {len(high_hours)} providers with DirectHours > 200:")
+            for _, row in high_hours.iterrows():
+                logger.warning(f"  Provider {row.get('DirectProviderName', 'Unknown')} (ID: {row.get('DirectProviderId', 'Unknown')}): {row['DirectHours']} hours")
+    
     return transformed_df
 
 
