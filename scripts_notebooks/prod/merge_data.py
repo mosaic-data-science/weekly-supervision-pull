@@ -19,6 +19,7 @@ from openpyxl import load_workbook
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import PatternFill
 from transform_data import clean_clinic_name
+from location_review import build_location_review
 
 
 def setup_logging(log_dir: str = None) -> logging.Logger:
@@ -341,8 +342,41 @@ def add_work_locations_from_sql(final_df: pd.DataFrame, employee_locations_df: p
     return final_df
 
 
+LOCATION_REVIEW_SHEET_NAME = 'LocationReview'
+
+
+def write_location_review_sheet(writer, location_review_df: pd.DataFrame, logger: logging.Logger) -> None:
+    """
+    Write the Location Review sheet (flagged BTs whose CentralReach profile clinic
+    differs from where they actually deliver sessions). If nothing is flagged, still
+    write the sheet with a short note so the tab is present and its absence is never
+    mistaken for the check not running.
+    """
+    if location_review_df is None:
+        return
+    if len(location_review_df) > 0:
+        location_review_df.to_excel(writer, sheet_name=LOCATION_REVIEW_SHEET_NAME, index=False)
+        logger.info(f"  - Saved {len(location_review_df)} flagged BT(s) to sheet '{LOCATION_REVIEW_SHEET_NAME}'")
+    else:
+        note = pd.DataFrame({
+            'ProviderName': [],
+            'ProfileOfficeLocation (CentralReach)': [],
+            'RecentServiceLocation': [],
+        })
+        note = pd.concat([
+            note,
+            pd.DataFrame([{
+                'ProviderName': 'No BTs flagged - every profile Office Location matches recent service location.',
+                'ProfileOfficeLocation (CentralReach)': '',
+                'RecentServiceLocation': '',
+            }])
+        ], ignore_index=True)
+        note.to_excel(writer, sheet_name=LOCATION_REVIEW_SHEET_NAME, index=False)
+        logger.info(f"  - No BTs flagged; wrote placeholder note to sheet '{LOCATION_REVIEW_SHEET_NAME}'")
+
+
 def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame = None,
-                   employee_locations_df: pd.DataFrame = None,
+                   employee_locations_df: pd.DataFrame = None, recent_service_df: pd.DataFrame = None,
                    transformed_file: str = None, bacb_file: str = None, save_file: bool = True,
                    output_file: str = None, save_to_archive: bool = False, archive_date: str = None,
                    archive_file_exists: bool = False) -> pd.DataFrame:
@@ -353,6 +387,7 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
         transformed_df (pd.DataFrame, optional): Transformed DataFrame. If None, will read from transformed_file.
         bacb_df (pd.DataFrame, optional): BACB DataFrame. If None, will read from bacb_file.
         employee_locations_df (pd.DataFrame, optional): Employee locations DataFrame from SQL query. Used to add WorkLocation column.
+        recent_service_df (pd.DataFrame, optional): Recent service-delivery locations from SQL query. Used to build the Location Review flag tab (does not affect tab assignment).
         transformed_file (str, optional): Transformed CSV file path. Used if transformed_df is None.
         bacb_file (str, optional): BACB CSV file path. Used if bacb_df is None.
         save_file (bool): Whether to save file to disk. Default True.
@@ -412,7 +447,12 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
     # Add work locations from SQL query if available
     if employee_locations_df is not None and len(employee_locations_df) > 0:
         final_df = add_work_locations_from_sql(final_df, employee_locations_df, logger)
-    
+
+    # Build the Location Review flag: BTs whose CentralReach profile Office Location no
+    # longer matches where they are actually delivering sessions (likely un-updated
+    # clinic transfers). This is a review list only; it does not change tab assignment.
+    location_review_df = build_location_review(employee_locations_df, recent_service_df, logger)
+
     if save_file:
         today = datetime.now().strftime('%Y-%m-%d')
         archive_folder = f'../../data/transformed_supervision_daily/archived'
@@ -484,7 +524,7 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             # "z_NoOfficeLocationListed" will naturally sort last due to the "z_" prefix
             clinics_sorted = sorted(clinics, key=lambda c: str(c).upper())
             logger.info(f"Sorted clinics alphabetically")
-            
+
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                 # Add employee locations tab as the first sheet
                 if employee_locations_df is not None and len(employee_locations_df) > 0:
@@ -496,7 +536,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                     logger.info(f"  - Saved {len(employee_locations_display)} rows to sheet 'EmployeeLocationInCR'")
                 else:
                     logger.warning("  - Employee locations data not available, skipping 'EmployeeLocationInCR' sheet")
-                
+
+                # Location Review tab (flagged clinic-transfer mismatches), after the CR reference sheet
+                write_location_review_sheet(writer, location_review_df, logger)
+
                 for clinic in clinics_sorted:
                     clinic_data = final_df[final_df['Clinic'] == clinic].copy()
                     
@@ -640,7 +683,7 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             
             # Sort clinics alphabetically (case-insensitive)
             clinics_sorted = sorted(clinics, key=lambda c: str(c).upper())
-            
+
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                 # Add employee locations tab as the first sheet
                 if employee_locations_df is not None and len(employee_locations_df) > 0:
@@ -652,7 +695,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                     logger.info(f"  - Saved {len(employee_locations_display)} rows to sheet 'EmployeeLocationInCR'")
                 else:
                     logger.warning("  - Employee locations data not available, skipping 'EmployeeLocationInCR' sheet")
-                
+
+                # Location Review tab (flagged clinic-transfer mismatches), after the CR reference sheet
+                write_location_review_sheet(writer, location_review_df, logger)
+
                 for clinic in clinics_sorted:
                     clinic_data = final_df[final_df['Clinic'] == clinic].copy()
                     
@@ -806,7 +852,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                     logger.info(f"  - Saved {len(employee_locations_display)} rows to sheet 'EmployeeLocationInCR'")
                 else:
                     logger.warning("  - Employee locations data not available, skipping 'EmployeeLocationInCR' sheet")
-                
+
+                # Location Review tab (flagged clinic-transfer mismatches), after the CR reference sheet
+                write_location_review_sheet(writer, location_review_df, logger)
+
                 # Add the main data sheet
                 final_df.to_excel(writer, sheet_name='Data', index=False)
             

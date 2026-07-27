@@ -136,3 +136,31 @@ SELECT
     (SELECT MAX(RowModifiedAt)  FROM [insights].[insights].[Provider]) AS provider_row_modified_at,
     (SELECT MAX(LastLoadedDate) FROM [insights].[dw2].[Contacts])      AS contacts_last_loaded_date;
 """
+
+# SQL query template for each BT's recent service-delivery locations. For direct
+# service (97153 / PDS | Technicians) over a recent lookback window, aggregates the
+# number of sessions and the most-recent session date per (provider, client office
+# location). Downstream code (location_review.build_location_review) compares each
+# provider's dominant service location against their CentralReach profile Office
+# Location (WorkLocation) to flag likely un-updated clinic transfers.
+#
+# Scoped to the same {provider_ids} set as the employee-locations pull so the flag
+# covers exactly the providers on the tracker and stays cheap. It is an aggregate
+# (GROUP BY), so the returned payload is one row per provider+location, not per session.
+RECENT_SERVICE_LOCATION_SQL_TEMPLATE = """
+SELECT
+    b.ProviderContactId,
+    c.ClientOfficeLocationName AS ServiceLocation,
+    COUNT(*)               AS Sessions,
+    MAX(b.ServiceEndTime)  AS LastServiceDate
+FROM [insights].[dw2].[BillingEntriesCurrent] AS b
+INNER JOIN [insights].[insights].[ServiceCode] AS sc
+    ON b.ServiceCodeId = sc.ServiceCodeId
+INNER JOIN [insights].[insights].[Client] AS c
+    ON b.ClientContactId = c.ClientId
+WHERE b.ServiceEndTime >= '{lookback_start}'
+  AND b.ServiceEndTime <  '{end_date}'
+  AND sc.ServiceCode IN ('97153', 'PDS | Technicians')
+  AND b.ProviderContactId IN ({provider_ids})
+GROUP BY b.ProviderContactId, c.ClientOfficeLocationName;
+"""
