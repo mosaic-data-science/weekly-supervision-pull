@@ -209,7 +209,7 @@ def run_pipeline_phases(start_date: str = None, end_date: str = None,
         logger.info("PHASE 1: PULLING DATA FROM DATABASE")
         logger.info("="*70)
         logger.info("Executing pull_data.py...")
-        direct_df, supervision_df, bacb_df, employee_locations_df = pull_data_main(start_date=start_date, end_date=end_date, save_files=True)
+        direct_df, supervision_df, bacb_df, employee_locations_df, recent_service_location_df = pull_data_main(start_date=start_date, end_date=end_date, save_files=True)
         logger.info("Phase 1 completed successfully")
         
         # Phase 2: Join direct and supervision data
@@ -236,7 +236,8 @@ def run_pipeline_phases(start_date: str = None, end_date: str = None,
         logger.info("PHASE 4: MERGING DATA")
         logger.info("="*70)
         logger.info("Executing merge_data.py...")
-        final_df = merge_data_main(transformed_df=transformed_df, bacb_df=bacb_df, employee_locations_df=employee_locations_df, 
+        final_df = merge_data_main(transformed_df=transformed_df, bacb_df=bacb_df, employee_locations_df=employee_locations_df,
+                                  recent_service_df=recent_service_location_df,
                                   save_file=True, save_to_archive=save_to_archive, archive_date=archive_date,
                                   archive_file_exists=archive_file_exists)
         logger.info("Phase 4 completed successfully")

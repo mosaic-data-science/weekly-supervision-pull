@@ -25,7 +25,13 @@ from sql_queries import (
     BACB_SUPERVISION_TEMPLATE,
     EMPLOYEE_LOCATIONS_SQL_TEMPLATE,
     EMPLOYEE_LOCATIONS_FRESHNESS_SQL,
+    RECENT_SERVICE_LOCATION_SQL_TEMPLATE,
 )
+
+# Lookback window (days) for the Location Review flag: how far back to look at each
+# BT's actual service-delivery locations when checking their CentralReach profile
+# Office Location for a likely un-updated clinic transfer.
+RECENT_SERVICE_LOOKBACK_DAYS = 45
 
 
 # Cache for employee_locations query results, keyed on the source tables'
@@ -305,7 +311,52 @@ def execute_employee_locations_query(conn, provider_ids: set) -> pd.DataFrame:
     return df
 
 
-def pull_data_main(start_date: str = None, end_date: str = None, save_files: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def execute_recent_service_location_query(conn, provider_ids: set,
+                                          lookback_days: int = RECENT_SERVICE_LOOKBACK_DAYS) -> pd.DataFrame:
+    """
+    Pull each BT's recent service-delivery locations, aggregated per provider+clinic.
+
+    Used to build the Location Review flag (see location_review.build_location_review):
+    the returned data is compared against each provider's CentralReach profile Office
+    Location to surface BTs whose profile clinic no longer matches where they actually
+    work (i.e. likely un-updated clinic transfers). This does NOT affect tab assignment.
+
+    The lookback window is anchored to "now" (independent of the pull's start/end date)
+    so the flag always reflects the BT's current clinic, even during the days 1-5
+    previous-month run.
+
+    Args:
+        conn: Database connection.
+        provider_ids: Set of ProviderContactId values to scope the query to (same set
+            used for the employee-locations pull).
+        lookback_days: How many days back to look at service delivery.
+
+    Returns:
+        pd.DataFrame: ProviderContactId, ServiceLocation, Sessions, LastServiceDate
+            (one row per provider+location). Empty if provider_ids is empty.
+    """
+    if not provider_ids:
+        logging.warning("No provider IDs supplied for recent service location query, skipping")
+        return pd.DataFrame(columns=['ProviderContactId', 'ServiceLocation', 'Sessions', 'LastServiceDate'])
+
+    now = datetime.now()
+    lookback_start = (now - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
+    end_date = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+
+    id_list = ", ".join(str(int(pid)) for pid in provider_ids)
+    sql_query = RECENT_SERVICE_LOCATION_SQL_TEMPLATE.format(
+        lookback_start=lookback_start, end_date=end_date, provider_ids=id_list
+    )
+    logging.info(
+        f"Executing recent service location query ({lookback_days}-day lookback from "
+        f"{lookback_start}) for {len(provider_ids)} providers..."
+    )
+    df = pd.read_sql(sql_query, conn)
+    logging.info(f"Recent service location query returned {len(df)} provider+location rows")
+    return df
+
+
+def pull_data_main(start_date: str = None, end_date: str = None, save_files: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Main function to pull data from database.
     
@@ -315,7 +366,8 @@ def pull_data_main(start_date: str = None, end_date: str = None, save_files: boo
         save_files (bool): Whether to save files to disk. Default True.
         
     Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]: (direct_df, supervision_df, bacb_df, employee_locations_df)
+        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+            (direct_df, supervision_df, bacb_df, employee_locations_df, recent_service_location_df)
     """
     # Load environment variables
     load_dotenv()
@@ -395,7 +447,13 @@ def pull_data_main(start_date: str = None, end_date: str = None, save_files: boo
                 int(pid) for pid in _df['ProviderContactId'].dropna().unique()
             )
     employee_locations_df = execute_employee_locations_query(conn, provider_ids)
-    
+
+    # Execute recent service location query (for the Location Review flag), scoped to
+    # the same providers. Anchored to a fixed recent lookback window, independent of
+    # the pull's date range, so it always reflects each BT's current clinic.
+    logger.info("Pulling recent service location data (for Location Review flag)...")
+    recent_service_location_df = execute_recent_service_location_query(conn, provider_ids)
+
     # Close connection
     conn.close()
     
@@ -423,13 +481,19 @@ def pull_data_main(start_date: str = None, end_date: str = None, save_files: boo
         os.makedirs(os.path.dirname(employee_locations_output), exist_ok=True)
         employee_locations_df.to_csv(employee_locations_output, index=False)
         logger.info(f"Saved employee locations data to: {employee_locations_output}")
-    
+
+        # Save recent service location data
+        recent_service_output = f'../../data/raw_pulls/recent_service_locations_{today_str}.csv'
+        os.makedirs(os.path.dirname(recent_service_output), exist_ok=True)
+        recent_service_location_df.to_csv(recent_service_output, index=False)
+        logger.info(f"Saved recent service location data to: {recent_service_output}")
+
     logger.info("="*50)
     logger.info(f"Data pull completed successfully!")
-    logger.info(f"Direct: {len(direct_df)} rows, Supervision: {len(supervision_df)} rows, BACB: {len(bacb_df)} rows, Employee Locations: {len(employee_locations_df)} rows")
+    logger.info(f"Direct: {len(direct_df)} rows, Supervision: {len(supervision_df)} rows, BACB: {len(bacb_df)} rows, Employee Locations: {len(employee_locations_df)} rows, Recent Service Locations: {len(recent_service_location_df)} rows")
     logger.info("="*50)
-    
-    return direct_df, supervision_df, bacb_df, employee_locations_df
+
+    return direct_df, supervision_df, bacb_df, employee_locations_df, recent_service_location_df
 
 
 def main():
