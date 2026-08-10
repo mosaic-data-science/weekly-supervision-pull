@@ -11,7 +11,15 @@ start_date = '{start_date}'
 end_date = '{end_date}'
 
 # SQL query template for direct service data (ServiceCode = '97153')
-# Excludes BCBAs from being direct providers
+# Excludes BCBAs from being direct providers.
+#
+# The Employee join is on EmployeeId = ProviderContactId (same CentralReach contact
+# identifier; Employee is 1:1 on it). It previously joined on EmployeeFirstName +
+# EmployeeLastName, which fanned out for the 36 duplicated staff names: because this
+# is a LEFT JOIN feeding SELECT DISTINCT, one non-BCBA namesake row was enough to let
+# a BCBA's own entries through the WHERE filter. Kept as a LEFT JOIN with the
+# IS NULL branch below so providers absent from Employee are still treated as direct
+# providers rather than silently dropped.
 DIRECT_SERVICES_SQL_TEMPLATE = f"""
 SELECT DISTINCT
     b.BillingEntryId,
@@ -33,8 +41,7 @@ INNER JOIN [insights].[insights].[Client] AS c
 LEFT JOIN [insights].[dw2].[Contacts] AS pdir
     ON pdir.ContactId = b.ProviderContactId
 LEFT JOIN [insights].[insights].[Employee] AS e
-    ON e.EmployeeFirstName = pdir.FirstName
-   AND e.EmployeeLastName = pdir.LastName
+    ON e.EmployeeId = b.ProviderContactId
 WHERE b.ServiceEndTime >= '{start_date}'
   AND b.ServiceEndTime <  '{end_date}'
   AND sc.ServiceCode IN ('97153', 'PDS | Technicians')
