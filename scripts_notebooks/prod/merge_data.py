@@ -130,6 +130,49 @@ def save_to_google_drive_folder(source_file: str, target_folder: str, logger: lo
     logger.info(f"Saved file to Google Drive folder: {target_file}")
 
 
+# The two candidate Drive roots the pipeline publishes to. The first is the macOS
+# CloudStorage path, the second the Windows drive letter; the publish helper tries
+# them in order, which is how the same code runs on either machine.
+GOOGLE_DRIVE_FOLDERS = (
+    '/Users/davidjcox/Library/CloudStorage/GoogleDrive-dcox@mosaictherapy.com/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking',
+    'G:/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking',
+)
+
+
+def publish_to_google_drive(output_file: str, save_to_archive: bool, logger: logging.Logger,
+                            push_to_drive: bool = True) -> None:
+    """
+    Copy the finished workbook into the shared Google Drive tracker folder.
+
+    This is the ONLY path that writes outside the repo, and it is business-facing:
+    save_to_google_drive_folder moves every other .xlsx in the live folder into
+    archived/ before copying the new one in, using os.path.basename(output_file) as
+    the name. Redirecting output_file alone does NOT keep a test run out of the
+    shared folder -- pass push_to_drive=False for that.
+
+    Args:
+        output_file: Local workbook to publish
+        save_to_archive: Publish into the archived/ subfolder instead of the live folder
+        logger: Logger instance
+        push_to_drive: When False, skip publishing entirely and log the skip
+    """
+    if not push_to_drive:
+        logger.info(f"push_to_drive=False, not publishing {os.path.basename(output_file)} to Google Drive")
+        return
+
+    save_fn = save_to_google_drive_archive_folder if save_to_archive else save_to_google_drive_folder
+    label = 'Google Drive archive folder' if save_to_archive else 'Google Drive folder'
+
+    last_error = None
+    for folder in GOOGLE_DRIVE_FOLDERS:
+        try:
+            save_fn(output_file, folder, logger)
+            return
+        except Exception as e:
+            last_error = e
+    logger.warning(f"Failed to save to {label}: {last_error}")
+
+
 def save_to_google_drive_archive_folder(source_file: str, target_folder: str, logger: logging.Logger):
     """
     Save the Excel file directly to Google Drive archived folder (for FINAL month files).
@@ -379,7 +422,7 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
                    employee_locations_df: pd.DataFrame = None, recent_service_df: pd.DataFrame = None,
                    transformed_file: str = None, bacb_file: str = None, save_file: bool = True,
                    output_file: str = None, save_to_archive: bool = False, archive_date: str = None,
-                   archive_file_exists: bool = False) -> pd.DataFrame:
+                   archive_file_exists: bool = False, push_to_drive: bool = True) -> pd.DataFrame:
     """
     Main function to merge data.
     
@@ -390,11 +433,18 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
         recent_service_df (pd.DataFrame, optional): Recent service-delivery locations from SQL query. Used to build the Location Review flag tab (does not affect tab assignment).
         transformed_file (str, optional): Transformed CSV file path. Used if transformed_df is None.
         bacb_file (str, optional): BACB CSV file path. Used if bacb_df is None.
-        save_file (bool): Whether to save file to disk. Default True.
+        save_file (bool): Whether to write the Excel workbook at all. Default True.
+            False skips every to_excel call AND the Drive publish.
         output_file (str, optional): Explicit output file path. If None, will use default naming.
+            NOTE: this controls only the LOCAL path. The Drive publish derives its
+            filename from basename(output_file), so redirecting this alone still writes
+            to the shared business folder -- set push_to_drive=False for a test run.
         save_to_archive (bool): If True, save to archived folder instead of main folder. Default False.
         archive_date (str, optional): Date string for _updated_{date} suffix when saving to archive. If None, uses today's date.
         archive_file_exists (bool): If True, existing file found and will use _updated suffix. If False, creates new file without suffix.
+        push_to_drive (bool): Whether to publish the workbook to the shared Google Drive
+            tracker folder. Default True (production behaviour). Pass False when
+            verifying pipeline changes so nothing reaches the business-facing folder.
         
     Returns:
         pd.DataFrame: Final merged DataFrame
@@ -651,28 +701,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             wb.save(output_file)
             logger.info(f"Saved final merged data to Excel file: {output_file}")
             
-            # Save to Google Drive folder
-            google_drive_folder = '/Users/davidjcox/Library/CloudStorage/GoogleDrive-dcox@mosaictherapy.com/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking'
-            google_drive_folder2 = 'G:/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking'
-            
-            if save_to_archive:
-                # Save directly to Google Drive archived folder
-                try:
-                    save_to_google_drive_archive_folder(output_file, google_drive_folder, logger)
-                except Exception as e:
-                    try:
-                        save_to_google_drive_archive_folder(output_file, google_drive_folder2, logger)
-                    except Exception as e2:
-                        logger.warning(f"Failed to save to Google Drive archive folder: {e2}")
-            else:
-                # Save to main Google Drive folder (which will archive old files)
-                try:
-                    save_to_google_drive_folder(output_file, google_drive_folder, logger)
-                except Exception as e:
-                    try:
-                        save_to_google_drive_folder(output_file, google_drive_folder2, logger)
-                    except Exception as e2:
-                        logger.warning(f"Failed to save to Google Drive folder: {e2}")
+            # Publish to the shared Drive tracker folder. This is business-facing and
+            # is skipped entirely when push_to_drive is False -- see
+            # publish_to_google_drive for why redirecting output_file is not enough.
+            publish_to_google_drive(output_file, save_to_archive, logger, push_to_drive)
         elif 'Clinic' in final_df.columns:
             # Fallback: Group data by Clinic if WorkLocation is not available
             # Get unique clinics that actually have data
@@ -806,28 +838,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             wb.save(output_file)
             logger.info(f"Saved final merged data to Excel file: {output_file}")
             
-            # Save to Google Drive folder
-            google_drive_folder = '/Users/davidjcox/Library/CloudStorage/GoogleDrive-dcox@mosaictherapy.com/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking'
-            google_drive_folder2 = 'G:/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking'
-            
-            if save_to_archive:
-                # Save directly to Google Drive archived folder
-                try:
-                    save_to_google_drive_archive_folder(output_file, google_drive_folder, logger)
-                except Exception as e:
-                    try:
-                        save_to_google_drive_archive_folder(output_file, google_drive_folder2, logger)
-                    except Exception as e2:
-                        logger.warning(f"Failed to save to Google Drive archive folder: {e2}")
-            else:
-                # Save to main Google Drive folder (which will archive old files)
-                try:
-                    save_to_google_drive_folder(output_file, google_drive_folder, logger)
-                except Exception as e:
-                    try:
-                        save_to_google_drive_folder(output_file, google_drive_folder2, logger)
-                    except Exception as e2:
-                        logger.warning(f"Failed to save to Google Drive folder: {e2}")
+            # Publish to the shared Drive tracker folder. This is business-facing and
+            # is skipped entirely when push_to_drive is False -- see
+            # publish_to_google_drive for why redirecting output_file is not enough.
+            publish_to_google_drive(output_file, save_to_archive, logger, push_to_drive)
         else:
             # Fallback: save as single sheet if Clinic column doesn't exist
             logger.warning("'Clinic' column not found, saving as single sheet")
@@ -940,28 +954,10 @@ def merge_data_main(transformed_df: pd.DataFrame = None, bacb_df: pd.DataFrame =
             wb.save(output_file)
             logger.info(f"Saved final merged data to: {output_file}")
             
-            # Save to Google Drive folder
-            google_drive_folder = '/Users/davidjcox/Library/CloudStorage/GoogleDrive-dcox@mosaictherapy.com/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking'
-            google_drive_folder2 = 'G:/.shortcut-targets-by-id/10MVMkxZfVuZY9Q4RfE_vHZ2_kaQk85E-/RBT Supervision Tracking/DailyRBTTracking'
-            
-            if save_to_archive:
-                # Save directly to Google Drive archived folder
-                try:
-                    save_to_google_drive_archive_folder(output_file, google_drive_folder, logger)
-                except Exception as e:
-                    try:
-                        save_to_google_drive_archive_folder(output_file, google_drive_folder2, logger)
-                    except Exception as e2:
-                        logger.warning(f"Failed to save to Google Drive archive folder: {e2}")
-            else:
-                # Save to main Google Drive folder (which will archive old files)
-                try:
-                    save_to_google_drive_folder(output_file, google_drive_folder, logger)
-                except Exception as e:
-                    try:
-                        save_to_google_drive_folder(output_file, google_drive_folder2, logger)
-                    except Exception as e2:
-                        logger.warning(f"Failed to save to Google Drive folder: {e2}")
+            # Publish to the shared Drive tracker folder. This is business-facing and
+            # is skipped entirely when push_to_drive is False -- see
+            # publish_to_google_drive for why redirecting output_file is not enough.
+            publish_to_google_drive(output_file, save_to_archive, logger, push_to_drive)
     
     logger.info("="*50)
     logger.info("Data merge completed successfully!")

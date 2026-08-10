@@ -100,31 +100,30 @@ GROUP BY b.ProviderContactId
 ORDER BY b.ProviderContactId;
 """
 
-# SQL query template for employee locations (maps provider names to office locations).
-# Pre-dedupes Provider in a CTE so the outer join input is smaller, and scopes the
-# Contacts side to a known set of ContactIds via the {provider_ids} placeholder
-# (a comma-separated list built from the direct/supervision/BACB pulls). Scoping
-# first avoids the full-table name-join cross-product that was timing out as the
-# tables grew. ORDER BY is dropped since downstream pandas code ignores row order.
+# SQL query template for employee locations (maps provider contact IDs to office
+# locations). Scoped to a known set of ContactIds via the {provider_ids} placeholder
+# (a comma-separated list built from the direct/supervision/BACB pulls) so the join
+# never runs as a full-table scan. ORDER BY is dropped since downstream pandas code
+# ignores row order.
+#
+# Joined on Provider.ProviderId = Contacts.ContactId -- these are the same
+# CentralReach contact identifier. An earlier version joined on
+# FirstName + LastName, which returned MULTIPLE rows for any provider sharing a name
+# with another provider record (e.g. two distinct "Emma Smith" employees, or one
+# active + one deactivated record). merge_data.add_work_locations_from_sql builds a
+# ProviderContactId -> WorkLocation dict, so a duplicated ID was resolved
+# last-row-wins and could silently place a BT on the wrong clinic tab. Verified over
+# the current provider set: the ID join matches all the same contacts (791/791) with
+# zero name mismatches and no duplicate IDs.
 EMPLOYEE_LOCATIONS_SQL_TEMPLATE = """
-WITH p AS (
-    SELECT DISTINCT
-        ProviderFirstName,
-        ProviderLastName,
-        ProviderOfficeLocationName
-    FROM [insights].[insights].[Provider]
-    WHERE ProviderFirstName IS NOT NULL
-      AND ProviderLastName IS NOT NULL
-)
-SELECT DISTINCT
+SELECT
     c.ContactId AS ProviderContactId,
     c.FirstName AS ProviderFirstName,
     c.LastName AS ProviderLastName,
     p.ProviderOfficeLocationName AS WorkLocation
 FROM [insights].[dw2].[Contacts] AS c
-INNER JOIN p
-    ON p.ProviderFirstName = c.FirstName
-   AND p.ProviderLastName = c.LastName
+INNER JOIN [insights].[insights].[Provider] AS p
+    ON p.ProviderId = c.ContactId
 WHERE c.ContactId IN ({provider_ids});
 """
 
