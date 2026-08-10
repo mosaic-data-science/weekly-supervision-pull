@@ -13,6 +13,7 @@ import pandas as pd
 import pyodbc
 import os
 import json
+import hashlib
 import logging
 import re
 import argparse
@@ -206,6 +207,15 @@ def execute_bacb_query(conn, start_date: str, end_date: str) -> pd.DataFrame:
     return df
 
 
+def _employee_locations_query_fingerprint() -> str:
+    """
+    Short hash of the employee locations query text. Stored in the cache metadata so
+    that editing the query invalidates the cache -- the source-table timestamps alone
+    cannot detect that the cached CSV was produced by a different (e.g. buggy) query.
+    """
+    return hashlib.sha256(EMPLOYEE_LOCATIONS_SQL_TEMPLATE.encode('utf-8')).hexdigest()[:16]
+
+
 def _fetch_employee_locations_freshness(conn) -> Tuple[str, str]:
     """
     Run the cheap freshness check against Provider / Contacts and return the
@@ -270,20 +280,43 @@ def execute_employee_locations_query(conn, provider_ids: set) -> pd.DataFrame:
                 meta = json.load(f)
             cached_provider = meta.get('provider_row_modified_at')
             cached_contacts = meta.get('contacts_last_loaded_date')
-            if cached_provider is not None and cached_contacts is not None \
+            cached_query = meta.get('query_fingerprint')
+            if cached_query != _employee_locations_query_fingerprint():
+                logging.info(
+                    "Employee locations cache invalidated: query text changed since "
+                    "the cache was written; running full query"
+                )
+            elif cached_provider is not None and cached_contacts is not None \
                and cached_provider >= provider_iso \
                and cached_contacts >= contacts_iso:
                 df = pd.read_csv(_EMPLOYEE_LOCATIONS_CACHE_CSV)
+                # The cache is built for whatever provider set the previous run
+                # requested, so a hit is only valid if it covers every provider this
+                # run asked about. Otherwise the missing providers would silently get
+                # no WorkLocation and fall back to the client office location, which
+                # can split one BT across several clinic tabs. This bites the days-1-5
+                # previous-month run, whose provider set differs from the
+                # current-month run that most recently wrote the cache.
+                cached_ids = {int(pid) for pid in df['ProviderContactId'].dropna()}
+                missing = {int(pid) for pid in provider_ids} - cached_ids
+                if missing:
+                    logging.info(
+                        f"Employee locations cache covers {len(df)} rows but is missing "
+                        f"{len(missing)} of the {len(provider_ids)} requested providers; "
+                        "running full query"
+                    )
+                else:
+                    logging.info(
+                        f"Employee locations cache hit (provider<={cached_provider}, "
+                        f"contacts<={cached_contacts}); loaded {len(df)} rows from cache"
+                    )
+                    return df
+            else:
                 logging.info(
-                    f"Employee locations cache hit (provider<={cached_provider}, "
-                    f"contacts<={cached_contacts}); loaded {len(df)} rows from cache"
+                    f"Employee locations cache stale (cached provider={cached_provider}, "
+                    f"live={provider_iso}; cached contacts={cached_contacts}, live={contacts_iso}); "
+                    "running full query"
                 )
-                return df
-            logging.info(
-                f"Employee locations cache stale (cached provider={cached_provider}, "
-                f"live={provider_iso}; cached contacts={cached_contacts}, live={contacts_iso}); "
-                "running full query"
-            )
         except Exception as e:
             logging.warning(f"Failed to read employee locations cache, running full query: {e}")
 
@@ -301,6 +334,7 @@ def execute_employee_locations_query(conn, provider_ids: set) -> pd.DataFrame:
                 json.dump({
                     'provider_row_modified_at': provider_iso,
                     'contacts_last_loaded_date': contacts_iso,
+                    'query_fingerprint': _employee_locations_query_fingerprint(),
                     'refreshed_at': datetime.now().isoformat(),
                     'row_count': int(len(df)),
                 }, f, indent=2)
